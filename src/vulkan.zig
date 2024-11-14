@@ -6,6 +6,7 @@ pub const c = @cImport({
     @cInclude("GLFW/glfw3.h");
     @cInclude("string.h");
 });
+pub const sync = @import("./vulkan/sync.zig");
 
 pub const GlfwWindow = struct {
     window: *c.GLFWwindow,
@@ -120,6 +121,7 @@ pub const QueueFamilyIndicies = struct {
         const queue_priorities = &[_]f32{1.0};
         if (indices.graphics_queue_index == indices.present_queue_index) {
             const info = allocator.alloc(c.VkDeviceQueueCreateInfo, 1) catch panic("Buffer not large enough for QueueCreateInfo", .{});
+            errdefer allocator.destroy(info);
             info[0] = c.VkDeviceQueueCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 .queueFamilyIndex = indices.graphics_queue_index,
@@ -136,6 +138,7 @@ pub const QueueFamilyIndicies = struct {
             };
         } else {
             const info = allocator.alloc(c.VkDeviceQueueCreateInfo, 2) catch panic("Buffer not large enough for QueueCreateInfo", .{});
+            errdefer allocator.destroy(info);
             info[0] = c.VkDeviceQueueCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 .queueFamilyIndex = indices.graphics_queue_index,
@@ -264,11 +267,13 @@ pub const LogicalDevice = struct {
             var surface_format_count: u32 = 0;
             _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device.*, surface.surface, &surface_format_count, null);
             const surface_formats = try allocator.alloc(c.VkSurfaceFormatKHR, surface_format_count);
+            errdefer allocator.free(surface_formats);
             _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device.*, surface.surface, &surface_format_count, surface_formats.ptr);
 
             var present_mode_count: u32 = 0;
             _ = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device.*, surface.surface, &present_mode_count, null);
             const present_modes = try allocator.alloc(c.VkPresentModeKHR, present_mode_count);
+            errdefer allocator.free(present_modes);
             _ = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device.*, surface.surface, &present_mode_count, present_modes.ptr);
 
             return .{
@@ -397,7 +402,7 @@ pub const SwapChain = struct {
 
     pub fn init(
         window: *const GlfwWindow,
-        surface: Surface,
+        surface: *const Surface,
         physical_device: *const PhysicalDevice,
         logical_device: *const LogicalDevice,
         allocator: Allocator,
@@ -446,9 +451,11 @@ pub const SwapChain = struct {
         var swap_chain_image_count: u32 = 0;
         _ = c.vkGetSwapchainImagesKHR(logical_device.device, swap_chain, &swap_chain_image_count, null);
         const swap_chain_images = try allocator.alloc(c.VkImage, swap_chain_image_count);
+        errdefer allocator.free(swap_chain_images);
         _ = c.vkGetSwapchainImagesKHR(logical_device.device, swap_chain, &swap_chain_image_count, swap_chain_images.ptr);
 
         const swap_chain_image_views = try allocator.alloc(c.VkImageView, swap_chain_image_count);
+        errdefer allocator.free(swap_chain_image_views);
         for (swap_chain_image_views, 0..) |*image_view, i| {
             const view_create_info = c.VkImageViewCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -493,6 +500,24 @@ pub const SwapChain = struct {
         c.vkDestroySwapchainKHR(swap_chain.logical_device.device, swap_chain.swap_chain, null);
         swap_chain.allocator.free(swap_chain.swap_chain_images);
         swap_chain.allocator.free(swap_chain.swap_chain_image_views);
+    }
+
+    pub fn viewport(swap_chain: *const SwapChain) c.VkViewport {
+        return c.VkViewport{
+            .x = 0.0,
+            .y = 0.0,
+            .width = @floatFromInt(swap_chain.swap_chain_extent.width),
+            .height = @floatFromInt(swap_chain.swap_chain_extent.height),
+            .minDepth = 0.0,
+            .maxDepth = 1.0,
+        };
+    }
+
+    pub fn scissor(swap_chain: *const SwapChain) c.VkRect2D {
+        return c.VkRect2D{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = swap_chain.swap_chain_extent,
+        };
     }
 };
 
@@ -567,10 +592,8 @@ pub const RenderPass = struct {
     pass: c.VkRenderPass,
     logical_device: *const LogicalDevice,
 
-    pub fn init(
-        swap_chain: *const SwapChain,
-        logical_device: *const LogicalDevice,
-    ) !RenderPass {
+    pub fn init(swap_chain: *const SwapChain) !RenderPass {
+        const logical_device = swap_chain.logical_device;
         const render_pass_create_info = c.VkRenderPassCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .attachmentCount = 1,
@@ -592,6 +615,15 @@ pub const RenderPass = struct {
                     .attachment = 0,
                     .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 },
+            },
+            .dependencyCount = 1,
+            .pDependencies = &c.VkSubpassDependency{
+                .srcSubpass = c.VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = 0,
+                .dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             },
         };
 
@@ -626,8 +658,8 @@ pub const Pipeline = struct {
         vert_shader_module: *const ShaderModule,
         frag_shader_module: *const ShaderModule,
         swap_chain: *const SwapChain,
-        logical_device: *const LogicalDevice,
     ) !Pipeline {
+        const logical_device = render_pass.logical_device;
         const shader_stages = [_]c.VkPipelineShaderStageCreateInfo{
             .{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -646,22 +678,8 @@ pub const Pipeline = struct {
         };
 
         const dynamic_states = [_]c.VkDynamicState{
-            // c.VK_DYNAMIC_STATE_VIEWPORT,
-            // c.VK_DYNAMIC_STATE_SCISSOR,
-        };
-
-        const viewport = c.VkViewport{
-            .x = 0.0,
-            .y = 0.0,
-            .width = @floatFromInt(swap_chain.swap_chain_extent.width),
-            .height = @floatFromInt(swap_chain.swap_chain_extent.height),
-            .minDepth = 0.0,
-            .maxDepth = 1.0,
-        };
-
-        const scissor = c.VkRect2D{
-            .offset = .{ .x = 0, .y = 0 },
-            .extent = swap_chain.swap_chain_extent,
+            c.VK_DYNAMIC_STATE_VIEWPORT,
+            c.VK_DYNAMIC_STATE_SCISSOR,
         };
 
         const pipeline_create_info = c.VkGraphicsPipelineCreateInfo{
@@ -683,9 +701,9 @@ pub const Pipeline = struct {
             .pViewportState = &c.VkPipelineViewportStateCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                 .viewportCount = 1,
-                .pViewports = &viewport,
+                .pViewports = &swap_chain.viewport(),
                 .scissorCount = 1,
-                .pScissors = &scissor,
+                .pScissors = &swap_chain.scissor(),
             },
             .pRasterizationState = &c.VkPipelineRasterizationStateCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -720,6 +738,7 @@ pub const Pipeline = struct {
             .layout = pipeline_layout.layout,
             .renderPass = render_pass.pass,
             .subpass = 0,
+            .basePipelineHandle = @ptrCast(c.VK_NULL_HANDLE),
         };
 
         var pipeline: c.VkPipeline = undefined;
@@ -742,5 +761,137 @@ pub const Pipeline = struct {
 
     pub fn deinit(pipeline: *Pipeline) void {
         c.vkDestroyPipeline(pipeline.logical_device.device, pipeline.pipeline, null);
+    }
+};
+
+pub const Framebuffers = struct {
+    buffers: []c.VkFramebuffer,
+    logical_device: *const LogicalDevice,
+
+    pub fn init(
+        render_pass: *const RenderPass,
+        swap_chain: *const SwapChain,
+        allocator: Allocator,
+    ) !Framebuffers {
+        const logical_device = render_pass.logical_device;
+        const buffers = try allocator.alloc(c.VkFramebuffer, swap_chain.swap_chain_image_views.len);
+        errdefer allocator.free(buffers);
+
+        for (buffers, 0..) |*buf, i| {
+            const framebuffer_create_info = c.VkFramebufferCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .renderPass = render_pass.pass,
+                .attachmentCount = 1,
+                .pAttachments = &[_]c.VkImageView{swap_chain.swap_chain_image_views[i]},
+                .width = swap_chain.swap_chain_extent.width,
+                .height = swap_chain.swap_chain_extent.height,
+                .layers = 1,
+            };
+
+            if (c.vkCreateFramebuffer(logical_device.device, &framebuffer_create_info, null, buf) != c.VK_SUCCESS) {
+                return error.VulkanFailedToCreateFramebuffer;
+            }
+
+            errdefer c.vkDestroyFramebuffer(logical_device.device, buf, null);
+        }
+
+        return .{
+            .buffers = buffers,
+            .logical_device = logical_device,
+        };
+    }
+
+    pub fn deinit(buffers: *Framebuffers) void {
+        for (buffers.buffers) |buf| {
+            c.vkDestroyFramebuffer(buffers.logical_device.device, buf, null);
+        }
+    }
+};
+
+pub const CommandPool = struct {
+    pool: c.VkCommandPool,
+    logical_device: *const LogicalDevice,
+
+    pub fn init(physical_device: *const PhysicalDevice, logical_device: *const LogicalDevice) !CommandPool {
+        const create_info = c.VkCommandPoolCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = physical_device.queue_family_indices.graphics_queue_index,
+        };
+
+        var command_pool: c.VkCommandPool = undefined;
+        if (c.vkCreateCommandPool(logical_device.device, &create_info, null, &command_pool) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateCommandPool;
+        }
+
+        return .{
+            .pool = command_pool,
+            .logical_device = logical_device,
+        };
+    }
+
+    pub fn deinit(pool: *CommandPool) void {
+        c.vkDestroyCommandPool(pool.logical_device.device, pool.pool, null);
+    }
+};
+
+pub const CommandBuffer = struct {
+    buffer: c.VkCommandBuffer,
+
+    pub fn init(command_pool: *const CommandPool) !CommandBuffer {
+        var buffer: c.VkCommandBuffer = undefined;
+        if (c.vkAllocateCommandBuffers(
+            command_pool.logical_device.device,
+            &c.VkCommandBufferAllocateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = command_pool.pool,
+                .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            },
+            &buffer,
+        ) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateCommandBuffer;
+        }
+
+        return .{
+            .buffer = buffer,
+        };
+    }
+
+    pub fn begin_record(
+        buffer: *const CommandBuffer,
+        render_pass: *const RenderPass,
+        framebuffers: *const Framebuffers,
+        swap_chain: *const SwapChain,
+        pipeline: *const Pipeline,
+        image_index: u32,
+    ) !void {
+        if (c.vkBeginCommandBuffer(buffer.buffer, &c.VkCommandBufferBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        }) != c.VK_SUCCESS) {
+            return error.VulkanFailedBeginRecordingCommandBuffer;
+        }
+
+        c.vkCmdBeginRenderPass(buffer.buffer, &c.VkRenderPassBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = render_pass.pass,
+            .framebuffer = framebuffers.buffers[image_index],
+            .renderArea = .{
+                .offset = .{ .x = 0, .y = 0 },
+                .extent = swap_chain.swap_chain_extent,
+            },
+            .clearValueCount = 1,
+            .pClearValues = &c.VkClearValue{ .color = .{ .float32 = [4]f32{ 0.0, 0.0, 0.0, 1.0 } } },
+        }, c.VK_SUBPASS_CONTENTS_INLINE);
+        c.vkCmdBindPipeline(buffer.buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+        c.vkCmdSetViewport(buffer.buffer, 0, 1, &swap_chain.viewport());
+        c.vkCmdSetScissor(buffer.buffer, 0, 1, &swap_chain.scissor());
+    }
+
+    pub fn submit(buffer: *const CommandBuffer) !void {
+        c.vkCmdEndRenderPass(buffer.buffer);
+        if (c.vkEndCommandBuffer(buffer.buffer) != c.VK_SUCCESS) {
+            return error.VulkanFailedToRecordCommandBuffer;
+        }
     }
 };

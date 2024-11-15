@@ -40,51 +40,66 @@ pub fn Renderer(comptime max_frames: u32) type {
         pub fn draw_frame(
             renderer: *Self,
             swap_chain: *const vk.SwapChain,
-            logical_device: *const vk.LogicalDevice,
             render_pass: *const vk.RenderPass,
             framebuffers: *const vk.Framebuffers,
             pipeline: *const vk.Pipeline,
+            draw_fn: anytype,
+            args: anytype,
+            opts: struct {
+                error_payload: *vk.c.VkResult,
+            },
         ) !void {
             const r = renderer.renderers[renderer.current_frame];
+            const logical_device = r.in_flight_fence.device;
             r.in_flight_fence.wait(null);
-            r.in_flight_fence.reset();
 
             var image_index: u32 = undefined;
-            if (vk.c.vkAcquireNextImageKHR(
-                logical_device.device,
-                swap_chain.swap_chain,
-                std.math.maxInt(u64),
-                r.image_available.semaphore,
-                @ptrCast(vk.c.VK_NULL_HANDLE),
-                &image_index,
-            ) != vk.c.VK_SUCCESS) {
-                return error.VulkanFailedToAcquireImage;
+            {
+                const result = vk.c.vkAcquireNextImageKHR(
+                    logical_device.device,
+                    swap_chain.swap_chain,
+                    std.math.maxInt(u64),
+                    r.image_available.semaphore,
+                    @ptrCast(vk.c.VK_NULL_HANDLE),
+                    &image_index,
+                );
+
+                if (result != vk.c.VK_SUCCESS) {
+                    opts.error_payload.* = result;
+                    return error.VulkanFailedToAcquireImage;
+                }
             }
+
+            r.in_flight_fence.reset();
 
             _ = vk.c.vkResetCommandBuffer(r.command_buffer.buffer, 0);
 
             {
                 try r.command_buffer.begin_record(render_pass, framebuffers, swap_chain, pipeline, image_index);
-                vk.c.vkCmdDraw(r.command_buffer.buffer, 3, 1, 0, 0);
+                @call(.auto, draw_fn, .{r.command_buffer.buffer} ++ args);
                 try r.command_buffer.submit();
             }
 
-            if (vk.c.vkQueueSubmit(
-                logical_device.graphics_queue,
-                1,
-                &vk.c.VkSubmitInfo{
-                    .sType = vk.c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                    .waitSemaphoreCount = 1,
-                    .pWaitSemaphores = &r.image_available.semaphore,
-                    .pWaitDstStageMask = &[_]vk.c.VkPipelineStageFlags{vk.c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
-                    .commandBufferCount = 1,
-                    .pCommandBuffers = &r.command_buffer.buffer,
-                    .signalSemaphoreCount = 1,
-                    .pSignalSemaphores = &r.render_finished.semaphore,
-                },
-                r.in_flight_fence.fence,
-            ) != vk.c.VK_SUCCESS) {
-                return error.VulkanFailedToDrawCommandBuffer;
+            {
+                const result = vk.c.vkQueueSubmit(
+                    logical_device.graphics_queue,
+                    1,
+                    &vk.c.VkSubmitInfo{
+                        .sType = vk.c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .waitSemaphoreCount = 1,
+                        .pWaitSemaphores = &r.image_available.semaphore,
+                        .pWaitDstStageMask = &[_]vk.c.VkPipelineStageFlags{vk.c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+                        .commandBufferCount = 1,
+                        .pCommandBuffers = &r.command_buffer.buffer,
+                        .signalSemaphoreCount = 1,
+                        .pSignalSemaphores = &r.render_finished.semaphore,
+                    },
+                    r.in_flight_fence.fence,
+                );
+                if (result != vk.c.VK_SUCCESS) {
+                    opts.error_payload.* = result;
+                    return error.VulkanFailedToSubmitCommandBuffer;
+                }
             }
 
             if (vk.c.vkQueuePresentKHR(logical_device.present_queue, &vk.c.VkPresentInfoKHR{

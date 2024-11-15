@@ -7,6 +7,7 @@ pub const c = @cImport({
     @cInclude("string.h");
 });
 pub const sync = @import("./vulkan/sync.zig");
+pub const vertex = @import("./vulkan/vertex.zig");
 
 pub const GlfwWindow = struct {
     window: *c.GLFWwindow,
@@ -14,7 +15,7 @@ pub const GlfwWindow = struct {
     pub fn init(width: c_int, height: c_int, title: [*c]const u8) !GlfwWindow {
         _ = c.glfwInit();
         c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
-        c.glfwWindowHint(c.GLFW_RESIZABLE, c.GLFW_FALSE);
+        // c.glfwWindowHint(c.GLFW_RESIZABLE, c.GLFW_FALSE);
         const window: GlfwWindow = .{
             .window = c.glfwCreateWindow(width, height, title, null, null) orelse return error.FailedInitWindow,
         };
@@ -31,6 +32,24 @@ pub const GlfwWindow = struct {
         var height: c_int = undefined;
         c.glfwGetFramebufferSize(window.window, &width, &height);
         return .{ .width = width, .height = height };
+    }
+
+    pub fn resizeCallback(
+        window: *const GlfwWindow,
+        callback: anytype,
+        user_data: anytype,
+    ) void {
+        c.glfwSetWindowUserPointer(window.window, user_data);
+        _ = c.glfwSetFramebufferSizeCallback(window.window, &struct {
+            fn rawWindowResizeCallback(win: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.C) void {
+                @call(.auto, callback, .{.{
+                    .width = width,
+                    .height = height,
+                    .user_data = @as(@TypeOf(user_data), @ptrCast(c.glfwGetWindowUserPointer(win))),
+                    .window = win,
+                }});
+            }
+        }.rawWindowResizeCallback);
     }
 };
 
@@ -658,6 +677,10 @@ pub const Pipeline = struct {
         vert_shader_module: *const ShaderModule,
         frag_shader_module: *const ShaderModule,
         swap_chain: *const SwapChain,
+        opts: struct {
+            vertex_binding_descs: []const vertex.BindDesc,
+            vertex_attribute_descs: []const vertex.AttrDesc,
+        },
     ) !Pipeline {
         const logical_device = render_pass.logical_device;
         const shader_stages = [_]c.VkPipelineShaderStageCreateInfo{
@@ -688,10 +711,10 @@ pub const Pipeline = struct {
             .pStages = &shader_stages,
             .pVertexInputState = &c.VkPipelineVertexInputStateCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                .vertexBindingDescriptionCount = 0,
-                .pVertexBindingDescriptions = null,
-                .vertexAttributeDescriptionCount = 0,
-                .pVertexAttributeDescriptions = null,
+                .vertexBindingDescriptionCount = @intCast(opts.vertex_binding_descs.len),
+                .pVertexBindingDescriptions = opts.vertex_binding_descs.ptr,
+                .vertexAttributeDescriptionCount = @intCast(opts.vertex_attribute_descs.len),
+                .pVertexAttributeDescriptions = opts.vertex_attribute_descs.ptr,
             },
             .pInputAssemblyState = &c.VkPipelineInputAssemblyStateCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,

@@ -19,10 +19,19 @@ const Vertex = struct {
     });
 };
 
-const vertices = [_]Vertex{
-    .{ .pos = [_]f32{ 0.0, -0.5 }, .color = [_]f32{ 1.0, 1.0, 1.0 } },
-    .{ .pos = [_]f32{ 0.5, 0.5 }, .color = [_]f32{ 0.0, 1.0, 0.0 } },
-    .{ .pos = [_]f32{ -0.5, 0.5 }, .color = [_]f32{ 1.0, 0.0, 1.0 } },
+const Offset = struct {
+    offset: vk.vertex.Vec2,
+
+    const bind_desc = vk.vertex.bindInstanced(Offset, .{
+        .binding = 1,
+    });
+
+    const attr_descs = vk.vertex.attributeDescriptions(Offset, .{
+        .binds = .{
+            .offset = .{ .location = 2 },
+        },
+        .binding = 1,
+    });
 };
 
 pub fn main() !void {
@@ -48,9 +57,6 @@ pub fn main() !void {
     var logical_device = try vk.LogicalDevice.init(&physical_device, &surface, allocator);
     defer logical_device.deinit();
 
-    var vertex_buffer = try vk.vertex.Buffer(Vertex).init(&vertices, &logical_device, &physical_device);
-    defer vertex_buffer.deinit();
-
     var vert_shader = try vk.ShaderModule.initFromEmbed(&logical_device, "shader.vert.spv");
     defer vert_shader.deinit();
 
@@ -73,8 +79,8 @@ pub fn main() !void {
         &frag_shader,
         &swap_chain,
         .{
-            .vertex_binding_descs = &[_]vk.vertex.BindDesc{Vertex.bind_desc},
-            .vertex_attribute_descs = &Vertex.attr_descs,
+            .vertex_binding_descs = &[_]vk.vertex.BindDesc{ Vertex.bind_desc, Offset.bind_desc },
+            .vertex_attribute_descs = &(Vertex.attr_descs ++ Offset.attr_descs),
         },
     );
     defer pipeline.deinit();
@@ -85,34 +91,61 @@ pub fn main() !void {
     var command_pool = try vk.CommandPool.init(&physical_device, &logical_device);
     defer command_pool.deinit();
 
-    std.debug.print("Running...\n", .{});
-
     var renderer = try Renderer(2).init(&command_pool);
     defer renderer.deinit();
 
+    const vertices = [_]Vertex{
+        .{ .pos = [_]f32{ 0.0, 0.0 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },
+        .{ .pos = [_]f32{ 0.1, 0.0 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },
+        .{ .pos = [_]f32{ 0.1, 0.1 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },
+        .{ .pos = [_]f32{ 0.0, 0.1 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },
+    };
+    const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
+    const offsets = [_]Offset{
+        .{ .offset = [_]f32{ -1.0, -1.0 } },
+        .{ .offset = [_]f32{ -0.8, -1.0 } },
+        .{ .offset = [_]f32{ -0.6, -1.0 } },
+        .{ .offset = [_]f32{ -0.4, -1.0 } },
+        .{ .offset = [_]f32{ -0.2, -1.0 } },
+        .{ .offset = [_]f32{ 0.0, -1.0 } },
+        .{ .offset = [_]f32{ 0.2, -1.0 } },
+        .{ .offset = [_]f32{ 0.4, -1.0 } },
+        .{ .offset = [_]f32{ 0.6, -1.0 } },
+        .{ .offset = [_]f32{ 0.8, -1.0 } },
+    };
+
+    var vertex_buffer = try vk.vertex.VertexBuffer(Vertex).init(&vertices, &logical_device, &physical_device, &command_pool);
+    defer vertex_buffer.deinit();
+
+    var offset_buffer = try vk.vertex.VertexBuffer(Offset).init(&offsets, &logical_device, &physical_device, &command_pool);
+    defer offset_buffer.deinit();
+
+    var index_buffer = try vk.vertex.IndexBuffer(u16).init(&indices, &logical_device, &physical_device, &command_pool);
+    defer index_buffer.deinit();
+
     while (vk.c.glfwWindowShouldClose(window.window) == 0) {
         framebuffer_resized = false;
+
         vk.c.glfwPollEvents();
+
         var result: vk.c.VkResult = undefined;
-        renderer.draw_frame(
-            &swap_chain,
-            &render_pass,
-            &framebuffers,
-            &pipeline,
-            struct {
-                fn draw(cmd_buf: anytype, vert_buf: anytype, verts: anytype) void {
-                    vk.c.vkCmdBindVertexBuffers(cmd_buf, 0, 1, &vert_buf.buffer, &@as(u64, 0));
-                    vk.c.vkCmdDraw(cmd_buf, verts.len, 1, 0, 0);
-                }
-            }.draw,
-            .{ vertex_buffer, vertices },
-            .{ .error_payload = &result },
-        ) catch |err| switch (err) {
+        const frame = renderer.begin_frame(&swap_chain, &render_pass, &framebuffers, &pipeline, .{ .error_payload = &result }) catch |err| switch (err) {
             error.VulkanFailedToAcquireImage => switch (result) {
-                vk.c.VK_ERROR_OUT_OF_DATE_KHR => framebuffer_resized = true,
-                vk.c.VK_SUBOPTIMAL_KHR => {},
+                vk.c.VK_ERROR_OUT_OF_DATE_KHR => {
+                    framebuffer_resized = true;
+                    continue;
+                },
+                vk.c.VK_SUBOPTIMAL_KHR => continue,
                 else => return,
             },
+            else => return err,
+        };
+
+        frame.commandBuffer().bindIndexBuffer(&index_buffer);
+        frame.commandBuffer().bindVertexBuffers(.{ &vertex_buffer, &offset_buffer });
+        vk.c.vkCmdDrawIndexed(frame.commandBuffer().buffer, indices.len, offsets.len, 0, 0, 0);
+
+        frame.draw(.{ .error_payload = &result }) catch |err| switch (err) {
             error.VulkanFailedToPresent => switch (result) {
                 vk.c.VK_ERROR_OUT_OF_DATE_KHR,
                 vk.c.VK_SUBOPTIMAL_KHR,

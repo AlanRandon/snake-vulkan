@@ -881,20 +881,29 @@ pub const CommandBuffer = struct {
         };
     }
 
-    pub fn begin_record(
+    pub fn begin(buffer: *const CommandBuffer, flags: c.VkCommandBufferUsageFlags) !void {
+        if (c.vkBeginCommandBuffer(buffer.buffer, &c.VkCommandBufferBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = flags,
+        }) != c.VK_SUCCESS) {
+            return error.VulkanFailedBeginRecordingCommandBuffer;
+        }
+    }
+
+    pub fn end(buffer: *const CommandBuffer) !void {
+        if (c.vkEndCommandBuffer(buffer.buffer) != c.VK_SUCCESS) {
+            return error.VulkanFailedToRecordCommandBuffer;
+        }
+    }
+
+    pub fn beginRenderPass(
         buffer: *const CommandBuffer,
         render_pass: *const RenderPass,
         framebuffers: *const Framebuffers,
         swap_chain: *const SwapChain,
         pipeline: *const Pipeline,
         image_index: u32,
-    ) !void {
-        if (c.vkBeginCommandBuffer(buffer.buffer, &c.VkCommandBufferBeginInfo{
-            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        }) != c.VK_SUCCESS) {
-            return error.VulkanFailedBeginRecordingCommandBuffer;
-        }
-
+    ) void {
         c.vkCmdBeginRenderPass(buffer.buffer, &c.VkRenderPassBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = render_pass.pass,
@@ -911,10 +920,22 @@ pub const CommandBuffer = struct {
         c.vkCmdSetScissor(buffer.buffer, 0, 1, &swap_chain.scissor());
     }
 
-    pub fn submit(buffer: *const CommandBuffer) !void {
+    pub fn endRenderPass(buffer: *const CommandBuffer) void {
         c.vkCmdEndRenderPass(buffer.buffer);
-        if (c.vkEndCommandBuffer(buffer.buffer) != c.VK_SUCCESS) {
-            return error.VulkanFailedToRecordCommandBuffer;
+    }
+
+    pub fn bindVertexBuffers(buffer: *const CommandBuffer, vertex_buffers: anytype) void {
+        const num_buffers = std.meta.fields(@TypeOf(vertex_buffers)).len;
+        var raw_buffers: [num_buffers]c.VkBuffer = undefined;
+        var offsets = [_]u64{0} ** num_buffers;
+        inline for (0..num_buffers) |i| {
+            raw_buffers[i] = vertex_buffers[i].raw.buffer;
         }
+
+        c.vkCmdBindVertexBuffers(buffer.buffer, 0, num_buffers, &raw_buffers, &offsets);
+    }
+
+    pub fn bindIndexBuffer(buffer: *const CommandBuffer, index_buffer: anytype) void {
+        c.vkCmdBindIndexBuffer(buffer.buffer, index_buffer.raw.buffer, 0, c.VK_INDEX_TYPE_UINT16);
     }
 };

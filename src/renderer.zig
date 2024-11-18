@@ -37,21 +37,19 @@ pub fn Renderer(comptime max_frames: u32) type {
             }
         }
 
-        pub fn draw_frame(
+        pub fn begin_frame(
             renderer: *Self,
             swap_chain: *const vk.SwapChain,
             render_pass: *const vk.RenderPass,
             framebuffers: *const vk.Framebuffers,
             pipeline: *const vk.Pipeline,
-            draw_fn: anytype,
-            args: anytype,
             opts: struct {
                 error_payload: *vk.c.VkResult,
             },
-        ) !void {
-            const r = renderer.renderers[renderer.current_frame];
-            const logical_device = r.in_flight_fence.device;
-            r.in_flight_fence.wait(null);
+        ) !Frame {
+            const frame_renderer = &renderer.renderers[renderer.current_frame];
+            const logical_device = frame_renderer.in_flight_fence.device;
+            frame_renderer.in_flight_fence.wait(null);
 
             var image_index: u32 = undefined;
             {
@@ -59,7 +57,7 @@ pub fn Renderer(comptime max_frames: u32) type {
                     logical_device.device,
                     swap_chain.swap_chain,
                     std.math.maxInt(u64),
-                    r.image_available.semaphore,
+                    frame_renderer.image_available.semaphore,
                     @ptrCast(vk.c.VK_NULL_HANDLE),
                     &image_index,
                 );
@@ -70,51 +68,77 @@ pub fn Renderer(comptime max_frames: u32) type {
                 }
             }
 
-            r.in_flight_fence.reset();
+            frame_renderer.in_flight_fence.reset();
 
-            _ = vk.c.vkResetCommandBuffer(r.command_buffer.buffer, 0);
+            _ = vk.c.vkResetCommandBuffer(frame_renderer.command_buffer.buffer, 0);
 
-            {
-                try r.command_buffer.begin_record(render_pass, framebuffers, swap_chain, pipeline, image_index);
-                @call(.auto, draw_fn, .{r.command_buffer.buffer} ++ args);
-                try r.command_buffer.submit();
-            }
+            try frame_renderer.command_buffer.begin(0);
+            frame_renderer.command_buffer.beginRenderPass(render_pass, framebuffers, swap_chain, pipeline, image_index);
 
-            {
-                const result = vk.c.vkQueueSubmit(
-                    logical_device.graphics_queue,
-                    1,
-                    &vk.c.VkSubmitInfo{
-                        .sType = vk.c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                        .waitSemaphoreCount = 1,
-                        .pWaitSemaphores = &r.image_available.semaphore,
-                        .pWaitDstStageMask = &[_]vk.c.VkPipelineStageFlags{vk.c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
-                        .commandBufferCount = 1,
-                        .pCommandBuffers = &r.command_buffer.buffer,
-                        .signalSemaphoreCount = 1,
-                        .pSignalSemaphores = &r.render_finished.semaphore,
-                    },
-                    r.in_flight_fence.fence,
-                );
-                if (result != vk.c.VK_SUCCESS) {
-                    opts.error_payload.* = result;
-                    return error.VulkanFailedToSubmitCommandBuffer;
-                }
-            }
-
-            if (vk.c.vkQueuePresentKHR(logical_device.present_queue, &vk.c.VkPresentInfoKHR{
-                .sType = vk.c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                .waitSemaphoreCount = 1,
-                .pWaitSemaphores = &r.render_finished.semaphore,
-                .swapchainCount = 1,
-                .pSwapchains = &swap_chain.swap_chain,
-                .pImageIndices = &image_index,
-                .pResults = null,
-            }) != vk.c.VK_SUCCESS) {
-                return error.VulkanFailedToPresent;
-            }
-
-            renderer.current_frame = (renderer.current_frame + 1) % max_frames;
+            return .{
+                .image_index = image_index,
+                .frame_renderer = frame_renderer,
+                .renderer = renderer,
+                .swap_chain = swap_chain,
+            };
         }
+
+        const Frame = struct {
+            image_index: u32,
+            frame_renderer: *const FrameRenderer,
+            renderer: *Self,
+            swap_chain: *const vk.SwapChain,
+
+            pub fn commandBuffer(frame: *const Frame) *const vk.CommandBuffer {
+                return &frame.frame_renderer.command_buffer;
+            }
+
+            pub fn draw(
+                frame: *const Frame,
+                opts: struct {
+                    error_payload: *vk.c.VkResult,
+                },
+            ) !void {
+                const logical_device = frame.renderer.renderers[0].in_flight_fence.device;
+                frame.frame_renderer.command_buffer.endRenderPass();
+                try frame.frame_renderer.command_buffer.end();
+
+                {
+                    const result = vk.c.vkQueueSubmit(
+                        logical_device.graphics_queue,
+                        1,
+                        &vk.c.VkSubmitInfo{
+                            .sType = vk.c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                            .waitSemaphoreCount = 1,
+                            .pWaitSemaphores = &frame.frame_renderer.image_available.semaphore,
+                            .pWaitDstStageMask = &[_]vk.c.VkPipelineStageFlags{vk.c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT},
+                            .commandBufferCount = 1,
+                            .pCommandBuffers = &frame.frame_renderer.command_buffer.buffer,
+                            .signalSemaphoreCount = 1,
+                            .pSignalSemaphores = &frame.frame_renderer.render_finished.semaphore,
+                        },
+                        frame.frame_renderer.in_flight_fence.fence,
+                    );
+                    if (result != vk.c.VK_SUCCESS) {
+                        opts.error_payload.* = result;
+                        return error.VulkanFailedToSubmitCommandBuffer;
+                    }
+                }
+
+                if (vk.c.vkQueuePresentKHR(logical_device.present_queue, &vk.c.VkPresentInfoKHR{
+                    .sType = vk.c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                    .waitSemaphoreCount = 1,
+                    .pWaitSemaphores = &frame.frame_renderer.render_finished.semaphore,
+                    .swapchainCount = 1,
+                    .pSwapchains = &frame.swap_chain.swap_chain,
+                    .pImageIndices = &frame.image_index,
+                    .pResults = null,
+                }) != vk.c.VK_SUCCESS) {
+                    return error.VulkanFailedToPresent;
+                }
+
+                frame.renderer.current_frame = (frame.renderer.current_frame + 1) % max_frames;
+            }
+        };
     };
 }

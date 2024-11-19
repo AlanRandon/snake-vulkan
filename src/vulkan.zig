@@ -577,13 +577,60 @@ pub const ShaderModule = struct {
     }
 };
 
+const PushConstantInfo = struct {
+    const Info = struct { stage_flags: u32, offset: u32 };
+
+    info: []const Info,
+    ranges: []const c.VkPushConstantRange,
+};
+
+pub const PushConstantDesc = struct {
+    ty: type,
+    stage_flags: u32 = c.VK_SHADER_STAGE_VERTEX_BIT,
+    offset: u32,
+};
+
+pub fn pushConstantLayouts(comptime push_constants: []const PushConstantDesc) PushConstantInfo {
+    comptime var push_constant_info: [push_constants.len]PushConstantInfo.Info = undefined;
+    comptime var push_constant_ranges: [push_constants.len]c.VkPushConstantRange = undefined;
+
+    inline for (push_constants, 0..) |constant, i| {
+        const size = @sizeOf(constant.ty);
+        push_constant_ranges[i] = c.VkPushConstantRange{
+            .stageFlags = constant.stage_flags,
+            .offset = constant.offset,
+            .size = size,
+        };
+        push_constant_info[i] = .{
+            .stage_flags = constant.stage_flags,
+            .offset = constant.offset,
+        };
+    }
+
+    const pc_info = push_constant_info;
+    const pc_ranges = push_constant_ranges;
+
+    return .{
+        .info = &pc_info,
+        .ranges = &pc_ranges,
+    };
+}
+
 pub const PipelineLayout = struct {
     layout: c.VkPipelineLayout,
     logical_device: *const LogicalDevice,
+    push_constant_info: PushConstantInfo,
 
-    pub fn init(logical_device: *const LogicalDevice) !PipelineLayout {
+    pub fn init(
+        logical_device: *const LogicalDevice,
+        opts: struct {
+            push_constant_info: PushConstantInfo,
+        },
+    ) !PipelineLayout {
         const pipeline_layout_create_info = c.VkPipelineLayoutCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pushConstantRangeCount = @intCast(opts.push_constant_info.ranges.len),
+            .pPushConstantRanges = opts.push_constant_info.ranges.ptr,
         };
 
         var pipeline_layout: c.VkPipelineLayout = undefined;
@@ -599,6 +646,7 @@ pub const PipelineLayout = struct {
         return .{
             .layout = pipeline_layout,
             .logical_device = logical_device,
+            .push_constant_info = opts.push_constant_info,
         };
     }
 
@@ -937,5 +985,32 @@ pub const CommandBuffer = struct {
 
     pub fn bindIndexBuffer(buffer: *const CommandBuffer, index_buffer: anytype) void {
         c.vkCmdBindIndexBuffer(buffer.buffer, index_buffer.raw.buffer, 0, c.VK_INDEX_TYPE_UINT16);
+    }
+
+    pub fn pushConstants(
+        buffer: *const CommandBuffer,
+        pipeline_layout: *const PipelineLayout,
+        constant: anytype,
+        opts: struct { index: usize },
+    ) void {
+        var info: ?PushConstantInfo.Info = null;
+        for (pipeline_layout.push_constant_info.info, 0..) |pc_info, i| {
+            if (i == opts.index) {
+                info = pc_info;
+            }
+        }
+
+        if (info == null) {
+            std.debug.panic("Could not find push constant, try specifying an index", .{});
+        }
+
+        c.vkCmdPushConstants(
+            buffer.buffer,
+            pipeline_layout.layout,
+            info.?.stage_flags,
+            info.?.offset,
+            @sizeOf(@TypeOf(constant.*)),
+            constant,
+        );
     }
 };

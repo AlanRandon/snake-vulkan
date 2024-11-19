@@ -34,6 +34,10 @@ const Offset = struct {
     });
 };
 
+const ShaderGlobals = struct {
+    winsize: vk.vertex.Vec2,
+};
+
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
@@ -63,7 +67,10 @@ pub fn main() !void {
     var frag_shader = try vk.ShaderModule.initFromEmbed(&logical_device, "shader.frag.spv");
     defer frag_shader.deinit();
 
-    var pipeline_layout = try vk.PipelineLayout.init(&logical_device);
+    var pipeline_layout = try vk.PipelineLayout.init(
+        &logical_device,
+        .{ .push_constant_info = vk.pushConstantLayouts(&[_]vk.PushConstantDesc{.{ .ty = ShaderGlobals, .offset = 0 }}) },
+    );
     defer pipeline_layout.deinit();
 
     var swap_chain = try vk.SwapChain.init(&window, &surface, &physical_device, &logical_device, allocator);
@@ -102,16 +109,10 @@ pub fn main() !void {
     };
     const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
     const offsets = [_]Offset{
-        .{ .offset = [_]f32{ -1.0, -1.0 } },
-        .{ .offset = [_]f32{ -0.8, -1.0 } },
-        .{ .offset = [_]f32{ -0.6, -1.0 } },
-        .{ .offset = [_]f32{ -0.4, -1.0 } },
-        .{ .offset = [_]f32{ -0.2, -1.0 } },
-        .{ .offset = [_]f32{ 0.0, -1.0 } },
-        .{ .offset = [_]f32{ 0.2, -1.0 } },
-        .{ .offset = [_]f32{ 0.4, -1.0 } },
-        .{ .offset = [_]f32{ 0.6, -1.0 } },
-        .{ .offset = [_]f32{ 0.8, -1.0 } },
+        .{ .offset = [_]f32{ 0.0, 0.0 } },
+        .{ .offset = [_]f32{ 0.9, 0.0 } },
+        .{ .offset = [_]f32{ 0.0, 0.9 } },
+        .{ .offset = [_]f32{ 0.9, 0.9 } },
     };
 
     var vertex_buffer = try vk.vertex.VertexBuffer(Vertex).init(&vertices, &logical_device, &physical_device, &command_pool);
@@ -122,6 +123,13 @@ pub fn main() !void {
 
     var index_buffer = try vk.vertex.IndexBuffer(u16).init(&indices, &logical_device, &physical_device, &command_pool);
     defer index_buffer.deinit();
+
+    var shader_globals = ShaderGlobals{
+        .winsize = [_]f32{
+            @floatFromInt(window.dimensions().width),
+            @floatFromInt(window.dimensions().height),
+        },
+    };
 
     while (vk.c.glfwWindowShouldClose(window.window) == 0) {
         framebuffer_resized = false;
@@ -143,6 +151,7 @@ pub fn main() !void {
 
         frame.commandBuffer().bindIndexBuffer(&index_buffer);
         frame.commandBuffer().bindVertexBuffers(.{ &vertex_buffer, &offset_buffer });
+        frame.commandBuffer().pushConstants(&pipeline_layout, &shader_globals, .{ .index = 0 });
         vk.c.vkCmdDrawIndexed(frame.commandBuffer().buffer, indices.len, offsets.len, 0, 0, 0);
 
         frame.draw(.{ .error_payload = &result }) catch |err| switch (err) {
@@ -156,6 +165,13 @@ pub fn main() !void {
         };
 
         if (framebuffer_resized) {
+            shader_globals = ShaderGlobals{
+                .winsize = [_]f32{
+                    @floatFromInt(window.dimensions().width),
+                    @floatFromInt(window.dimensions().height),
+                },
+            };
+
             _ = vk.c.vkDeviceWaitIdle(logical_device.device);
             framebuffers.deinit();
             swap_chain.deinit();

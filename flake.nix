@@ -26,6 +26,7 @@
               vulkan-validation-layers
               spirv-tools
               shaderc
+              stb
               glfw
             ];
         };

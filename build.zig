@@ -13,6 +13,11 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
+    exe.addCSourceFile(.{ .file = b.path("src/stb_wrapper.c") });
+
+    exe.root_module.addAnonymousImport("tiles.png", .{
+        .root_source_file = b.path("assets/tiles.png"),
+    });
 
     var shaders = std.fs.openDirAbsolute(b.path("./shaders").getPath(b), .{ .iterate = true }) catch unreachable;
     defer shaders.close();

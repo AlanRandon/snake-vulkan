@@ -73,9 +73,27 @@ pub fn attributeDescriptions(
     return descs;
 }
 
+pub fn findMemoryType(
+    physical_device: *const vk.PhysicalDevice,
+    mem_requirements: c.VkMemoryRequirements,
+    properties: c.VkMemoryPropertyFlags,
+) !u32 {
+    var mem_props: c.VkPhysicalDeviceMemoryProperties = undefined;
+    c.vkGetPhysicalDeviceMemoryProperties(physical_device.device, &mem_props);
+
+    for (0..mem_props.memoryTypeCount) |i| {
+        const filter: bool = mem_requirements.memoryTypeBits & (@as(u32, 1) << @as(u5, @intCast(i))) != 0;
+        if (filter and (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
+            return @intCast(i);
+        }
+    }
+
+    return error.VulkanFailedToFindSuitableMemoryType;
+}
+
 const RawBuffer = struct { buffer: c.VkBuffer, memory: c.VkDeviceMemory };
 
-fn createBuffer(
+pub fn createBuffer(
     size: c.VkDeviceSize,
     usage: c.VkBufferUsageFlags,
     properties: c.VkMemoryPropertyFlags,
@@ -101,18 +119,7 @@ fn createBuffer(
     var mem_requirements: c.VkMemoryRequirements = undefined;
     c.vkGetBufferMemoryRequirements(logical_device.device, buffer, &mem_requirements);
 
-    var mem_props: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(physical_device.device, &mem_props);
-
-    const mem_type_index: u32 = blk: {
-        for (0..mem_props.memoryTypeCount) |i| {
-            const filter: bool = mem_requirements.memoryTypeBits & (@as(u32, 1) << @as(u5, @intCast(i))) != 0;
-            if (filter and (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
-                break :blk @intCast(i);
-            }
-        }
-        return error.VulkanFailedToFindSuitableMemoryType;
-    };
+    const mem_type_index: u32 = try findMemoryType(physical_device, mem_requirements, properties);
 
     var memory: c.VkDeviceMemory = undefined;
     if (c.vkAllocateMemory(
@@ -136,7 +143,7 @@ fn createBuffer(
     };
 }
 
-fn createStagedBuffer(
+pub fn createStagedBuffer(
     comptime T: type,
     data: []const T,
     usage: c.VkBufferUsageFlags,

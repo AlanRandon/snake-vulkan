@@ -101,6 +101,9 @@ pub fn main() !void {
     var renderer = try Renderer(2).init(&command_pool);
     defer renderer.deinit();
 
+    var tiles = try vk.texture.TextureImage.init("tiles.png", &logical_device, &physical_device, &command_pool);
+    defer tiles.deinit();
+
     const vertices = [_]Vertex{
         .{ .pos = [_]f32{ 0.0, 0.0 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },
         .{ .pos = [_]f32{ 0.1, 0.0 }, .color = [_]f32{ 1.0, 0.0, 0.0 } },

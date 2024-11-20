@@ -4,10 +4,12 @@ const panic = std.debug.panic;
 pub const c = @cImport({
     @cDefine("GLFW_INCLUDE_VULKAN", "");
     @cInclude("GLFW/glfw3.h");
+    @cInclude("stb/stb_image.h");
     @cInclude("string.h");
 });
 pub const sync = @import("./vulkan/sync.zig");
 pub const vertex = @import("./vulkan/vertex.zig");
+pub const texture = @import("./vulkan/texture.zig");
 
 pub const GlfwWindow = struct {
     window: *c.GLFWwindow,

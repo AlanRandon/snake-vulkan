@@ -200,6 +200,12 @@ pub const PhysicalDevice = struct {
                 return error.VulkanMissingRequiredExtensions;
             }
 
+            var features: c.VkPhysicalDeviceFeatures = undefined;
+            c.vkGetPhysicalDeviceFeatures(device.*, &features);
+            if (features.samplerAnisotropy != c.VK_TRUE) {
+                return error.VulkanMissingRequiredFeatures;
+            }
+
             if (try findQueueFamilyIndicies(device, &surface.surface, allocator)) |queue_family_indices| {
                 return .{ .device = device.*, .queue_family_indices = queue_family_indices };
             }
@@ -365,7 +371,9 @@ pub const LogicalDevice = struct {
             .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             .pQueueCreateInfos = queue_create_info.info.ptr,
             .queueCreateInfoCount = @intCast(queue_create_info.info.len),
-            .pEnabledFeatures = &c.VkPhysicalDeviceFeatures{},
+            .pEnabledFeatures = &c.VkPhysicalDeviceFeatures{
+                .samplerAnisotropy = c.VK_TRUE,
+            },
             .enabledExtensionCount = logical_device_extensions.len,
             .ppEnabledExtensionNames = &logical_device_extensions,
         };
@@ -412,11 +420,106 @@ pub const LogicalDevice = struct {
     }
 };
 
+pub const ImageView = struct {
+    view: c.VkImageView,
+    logical_device: *const LogicalDevice,
+
+    pub fn init(image: c.VkImage, format: c.VkFormat, logical_device: *const LogicalDevice) !ImageView {
+        const view_create_info = c.VkImageViewCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .components = .{
+                .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = .{
+                .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+
+        var image_view: c.VkImageView = undefined;
+        if (c.vkCreateImageView(logical_device.device, &view_create_info, null, &image_view) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateImageView;
+        }
+
+        return .{
+            .view = image_view,
+            .logical_device = logical_device,
+        };
+    }
+
+    pub fn deinit(view: *ImageView) void {
+        c.vkDestroyImageView(view.logical_device.device, view.view, null);
+    }
+
+    pub fn sampler(view: *const ImageView, physical_device: *const PhysicalDevice, opts: ImageSampler.Options) !ImageSampler {
+        return try ImageSampler.init(view, physical_device, opts);
+    }
+};
+
+pub const ImageSampler = struct {
+    sampler: c.VkSampler,
+    logical_device: *const LogicalDevice,
+
+    pub const Options = struct { blur: bool = false };
+
+    pub fn init(view: *const ImageView, physical_device: *const PhysicalDevice, opts: Options) !ImageSampler {
+        var properties: c.VkPhysicalDeviceProperties = undefined;
+        c.vkGetPhysicalDeviceProperties(physical_device.device, &properties);
+
+        const filter: c_uint = if (opts.blur) c.VK_FILTER_LINEAR else c.VK_FILTER_NEAREST;
+
+        var sampler: c.VkSampler = undefined;
+        if (c.vkCreateSampler(
+            view.logical_device.device,
+            &c.VkSamplerCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .magFilter = filter,
+                .minFilter = filter,
+                .addressModeU = c.VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeV = c.VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeW = c.VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .anisotropyEnable = if (opts.blur) c.VK_TRUE else c.VK_FALSE,
+                .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+                .borderColor = c.VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+                .unnormalizedCoordinates = c.VK_FALSE,
+                .compareEnable = c.VK_FALSE,
+                .compareOp = c.VK_COMPARE_OP_ALWAYS,
+                .mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                .mipLodBias = 0.0,
+                .minLod = 0.0,
+                .maxLod = 0.0,
+            },
+            null,
+            &sampler,
+        ) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateSampler;
+        }
+
+        return .{
+            .sampler = sampler,
+            .logical_device = view.logical_device,
+        };
+    }
+
+    pub fn deinit(sampler: *ImageSampler) void {
+        c.vkDestroySampler(sampler.logical_device.device, sampler.sampler, null);
+    }
+};
+
 pub const SwapChain = struct {
     swap_chain: c.VkSwapchainKHR,
     logical_device: *const LogicalDevice,
     swap_chain_images: []c.VkImage,
-    swap_chain_image_views: []c.VkImageView,
+    swap_chain_image_views: []ImageView,
     swap_chain_format: c.VkFormat,
     swap_chain_extent: c.VkExtent2D,
     allocator: Allocator,
@@ -475,32 +578,10 @@ pub const SwapChain = struct {
         errdefer allocator.free(swap_chain_images);
         _ = c.vkGetSwapchainImagesKHR(logical_device.device, swap_chain, &swap_chain_image_count, swap_chain_images.ptr);
 
-        const swap_chain_image_views = try allocator.alloc(c.VkImageView, swap_chain_image_count);
+        const swap_chain_image_views = try allocator.alloc(ImageView, swap_chain_image_count);
         errdefer allocator.free(swap_chain_image_views);
         for (swap_chain_image_views, 0..) |*image_view, i| {
-            const view_create_info = c.VkImageViewCreateInfo{
-                .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = swap_chain_images[i],
-                .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
-                .format = surface_format.format,
-                .components = .{
-                    .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-                .subresourceRange = .{
-                    .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-            };
-
-            if (c.vkCreateImageView(logical_device.device, &view_create_info, null, image_view) != c.VK_SUCCESS) {
-                return error.VulkanFailedToCreateImageView;
-            }
+            image_view.* = try ImageView.init(swap_chain_images[i], surface_format.format, logical_device);
         }
 
         return .{
@@ -515,8 +596,8 @@ pub const SwapChain = struct {
     }
 
     pub fn deinit(swap_chain: *SwapChain) void {
-        for (swap_chain.swap_chain_image_views) |image_view| {
-            c.vkDestroyImageView(swap_chain.logical_device.device, image_view, null);
+        for (swap_chain.swap_chain_image_views) |*image_view| {
+            image_view.deinit();
         }
         c.vkDestroySwapchainKHR(swap_chain.logical_device.device, swap_chain.swap_chain, null);
         swap_chain.allocator.free(swap_chain.swap_chain_images);
@@ -618,6 +699,34 @@ pub fn pushConstantLayouts(comptime push_constants: []const PushConstantDesc) Pu
     };
 }
 
+pub const DescriptorSetLayout = struct {
+    descriptor_set_layout: c.VkDescriptorSetLayout,
+    logical_device: *const LogicalDevice,
+
+    pub fn init(
+        logical_device: *const LogicalDevice,
+        descriptor_sets: []const c.VkDescriptorSetLayoutBinding,
+    ) !DescriptorSetLayout {
+        var descriptor_set_layout: c.VkDescriptorSetLayout = undefined;
+        if (c.vkCreateDescriptorSetLayout(logical_device.device, &c.VkDescriptorSetLayoutCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = @intCast(descriptor_sets.len),
+            .pBindings = descriptor_sets.ptr,
+        }, null, &descriptor_set_layout) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateDescriptorSetLayout;
+        }
+
+        return .{
+            .descriptor_set_layout = descriptor_set_layout,
+            .logical_device = logical_device,
+        };
+    }
+
+    pub fn deinit(layout: *DescriptorSetLayout) void {
+        c.vkDestroyDescriptorSetLayout(layout.logical_device.device, layout.descriptor_set_layout, null);
+    }
+};
+
 pub const PipelineLayout = struct {
     layout: c.VkPipelineLayout,
     logical_device: *const LogicalDevice,
@@ -627,12 +736,15 @@ pub const PipelineLayout = struct {
         logical_device: *const LogicalDevice,
         opts: struct {
             push_constant_info: PushConstantInfo,
+            descriptor_set_layout: *const DescriptorSetLayout,
         },
     ) !PipelineLayout {
         const pipeline_layout_create_info = c.VkPipelineLayoutCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .pushConstantRangeCount = @intCast(opts.push_constant_info.ranges.len),
             .pPushConstantRanges = opts.push_constant_info.ranges.ptr,
+            .setLayoutCount = 1,
+            .pSetLayouts = &opts.descriptor_set_layout.descriptor_set_layout,
         };
 
         var pipeline_layout: c.VkPipelineLayout = undefined;
@@ -855,7 +967,7 @@ pub const Framebuffers = struct {
                 .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 .renderPass = render_pass.pass,
                 .attachmentCount = 1,
-                .pAttachments = &[_]c.VkImageView{swap_chain.swap_chain_image_views[i]},
+                .pAttachments = &[_]c.VkImageView{swap_chain.swap_chain_image_views[i].view},
                 .width = swap_chain.swap_chain_extent.width,
                 .height = swap_chain.swap_chain_extent.height,
                 .layers = 1,
@@ -1014,5 +1126,50 @@ pub const CommandBuffer = struct {
             @sizeOf(@TypeOf(constant.*)),
             constant,
         );
+    }
+};
+
+pub const DescriptorPool = struct {
+    pool: c.VkDescriptorPool,
+    logical_device: *const LogicalDevice,
+
+    pub fn init(
+        logical_device: *const LogicalDevice,
+        comptime opts: struct {
+            set_types: []const c.VkDescriptorType,
+            descriptor_count: u32,
+        },
+    ) !DescriptorPool {
+        var pool_sizes: [opts.set_types.len]c.VkDescriptorPoolSize = undefined;
+        for (opts.set_types, 0..) |ty, i| {
+            pool_sizes[i] = .{
+                .type = ty,
+                .descriptorCount = opts.descriptor_count,
+            };
+        }
+
+        var pool: c.VkDescriptorPool = undefined;
+        if (c.vkCreateDescriptorPool(
+            logical_device.device,
+            &c.VkDescriptorPoolCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                .poolSizeCount = 1,
+                .pPoolSizes = &pool_sizes,
+                .maxSets = opts.descriptor_count,
+            },
+            null,
+            &pool,
+        ) != c.VK_SUCCESS) {
+            return error.VulkanFailedToCreateDescriptorPool;
+        }
+
+        return .{
+            .pool = pool,
+            .logical_device = logical_device,
+        };
+    }
+
+    pub fn deinit(pool: *DescriptorPool) void {
+        c.vkDestroyDescriptorPool(pool.logical_device.device, pool.pool, null);
     }
 };

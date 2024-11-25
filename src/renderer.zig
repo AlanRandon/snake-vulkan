@@ -6,6 +6,7 @@ pub fn Renderer(comptime max_frames: u32) type {
     return struct {
         renderers: [max_frames]FrameRenderer,
         current_frame: u32 = 0,
+        descriptor_pool: vk.DescriptorPool,
 
         const Self = @This();
         const FrameRenderer = struct {
@@ -13,20 +14,53 @@ pub fn Renderer(comptime max_frames: u32) type {
             image_available: sync.Semaphore,
             render_finished: sync.Semaphore,
             in_flight_fence: sync.Fence,
+            descriptor_sets: vk.c.VkDescriptorSet,
         };
 
-        pub fn init(command_pool: *const vk.CommandPool) !Self {
+        pub fn init(
+            command_pool: *const vk.CommandPool,
+            descriptor_set_layout: *const vk.DescriptorSetLayout,
+            comptime opts: struct {
+                descriptor_set_types: []const vk.c.VkDescriptorType,
+            },
+        ) !Self {
             const logical_device = command_pool.logical_device;
+
+            const pool = try vk.DescriptorPool.init(logical_device, .{
+                .set_types = opts.descriptor_set_types,
+                .descriptor_count = max_frames,
+            });
+
+            var descriptor_set_layouts: [max_frames]vk.c.VkDescriptorSetLayout = undefined;
+            inline for (0..max_frames) |i| {
+                descriptor_set_layouts[i] = descriptor_set_layout.descriptor_set_layout;
+            }
+
+            var descriptor_sets: [max_frames]vk.c.VkDescriptorSet = undefined;
+            if (vk.c.vkAllocateDescriptorSets(logical_device.device, &vk.c.VkDescriptorSetAllocateInfo{
+                .sType = vk.c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = pool.pool,
+                .descriptorSetCount = max_frames,
+                .pSetLayouts = &descriptor_set_layouts,
+            }, &descriptor_sets) != vk.c.VK_SUCCESS) {
+                return error.VulkanFailedToAllocateDescriptorSets;
+            }
+
             var renderers: [max_frames]FrameRenderer = undefined;
-            for (&renderers) |*renderer| {
+            for (&renderers, 0..) |*renderer, i| {
                 renderer.* = FrameRenderer{
                     .command_buffer = try vk.CommandBuffer.init(command_pool),
                     .image_available = try sync.Semaphore.init(logical_device),
                     .render_finished = try sync.Semaphore.init(logical_device),
                     .in_flight_fence = try sync.Fence.init(logical_device, true),
+                    .descriptor_sets = descriptor_sets[i],
                 };
             }
-            return .{ .renderers = renderers };
+
+            return .{
+                .renderers = renderers,
+                .descriptor_pool = pool,
+            };
         }
 
         pub fn deinit(renderer: *Self) void {
@@ -35,6 +69,49 @@ pub fn Renderer(comptime max_frames: u32) type {
                 defer r.render_finished.deinit();
                 defer r.in_flight_fence.deinit();
             }
+            renderer.descriptor_pool.deinit();
+        }
+
+        pub const DescriptorSet = struct {
+            binding: u32,
+            data: union(enum) {
+                image: struct {
+                    view: *const vk.ImageView,
+                    sampler: *const vk.ImageSampler,
+                },
+            },
+        };
+
+        pub fn updateDescriptorSets(
+            renderer: *const Self,
+            comptime len: usize,
+            sets: [len]DescriptorSet,
+        ) void {
+            const logical_device = renderer.renderers[0].in_flight_fence.device;
+            const size = len * max_frames;
+            var writes: [size]vk.c.VkWriteDescriptorSet = undefined;
+
+            for (renderer.renderers, 0..) |r, i| {
+                for (sets, 0..) |set, j| {
+                    writes[i * len + j] = switch (set.data) {
+                        .image => |image| .{
+                            .sType = vk.c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            .dstSet = r.descriptor_sets,
+                            .dstBinding = set.binding,
+                            .dstArrayElement = 0,
+                            .descriptorType = vk.c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            .descriptorCount = 1,
+                            .pImageInfo = &vk.c.VkDescriptorImageInfo{
+                                .imageLayout = vk.c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .imageView = image.view.view,
+                                .sampler = image.sampler.sampler,
+                            },
+                        },
+                    };
+                }
+            }
+
+            vk.c.vkUpdateDescriptorSets(logical_device.device, @intCast(size), &writes, 0, null);
         }
 
         pub fn begin_frame(
@@ -91,6 +168,19 @@ pub fn Renderer(comptime max_frames: u32) type {
 
             pub fn commandBuffer(frame: *const Frame) *const vk.CommandBuffer {
                 return &frame.frame_renderer.command_buffer;
+            }
+
+            pub fn bindDescriptorSets(frame: *const Frame, layout: *const vk.PipelineLayout) void {
+                vk.c.vkCmdBindDescriptorSets(
+                    frame.commandBuffer().buffer,
+                    vk.c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    layout.layout,
+                    0,
+                    1,
+                    &frame.frame_renderer.descriptor_sets,
+                    0,
+                    null,
+                );
             }
 
             pub fn draw(

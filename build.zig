@@ -15,9 +15,19 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("vulkan");
     exe.addCSourceFile(.{ .file = b.path("src/stb_wrapper.c") });
 
-    exe.root_module.addAnonymousImport("tiles.png", .{
-        .root_source_file = b.path("assets/tiles.png"),
-    });
+    {
+        var assets = std.fs.openDirAbsolute(b.path("./assets").getPath(b), .{ .iterate = true }) catch unreachable;
+        defer assets.close();
+
+        var it = assets.iterate();
+        while (it.next() catch unreachable) |entry| {
+            const name = entry.name;
+            exe.root_module.addAnonymousImport(
+                std.mem.concat(b.allocator, u8, &[_][]const u8{ "asset:", name }) catch unreachable,
+                .{ .root_source_file = b.path(b.pathJoin(&[_][]const u8{ "assets", name })) },
+            );
+        }
+    }
 
     var shaders = std.fs.openDirAbsolute(b.path("./shaders").getPath(b), .{ .iterate = true }) catch unreachable;
     defer shaders.close();

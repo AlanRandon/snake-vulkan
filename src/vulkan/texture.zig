@@ -27,7 +27,7 @@ pub const TextureImage = struct {
         ) orelse return error.FailedToLoadStbImage;
         defer c.stbi_image_free(pixels);
 
-        const image_size: u64 = @intCast(width * height * 4);
+        const image_size: c.VkDeviceSize = @intCast(width * height * 4);
         const staging_buffer = try vk.vertex.createBuffer(
             image_size,
             c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -41,7 +41,7 @@ pub const TextureImage = struct {
         var gpu_pixels: ?*align(@alignOf(u8)) anyopaque = undefined;
         gpu_pixels = undefined;
         _ = c.vkMapMemory(logical_device.device, staging_buffer.memory, 0, image_size, 0, &gpu_pixels);
-        @memcpy(@as([*]u8, @ptrCast(gpu_pixels)), data);
+        @memcpy(@as([*]u8, @ptrCast(gpu_pixels)), @as([*]u8, @ptrCast(pixels))[0..image_size]);
         c.vkUnmapMemory(logical_device.device, staging_buffer.memory);
 
         var texture_image: c.VkImage = undefined;
@@ -159,6 +159,10 @@ pub const TextureImage = struct {
     pub fn deinit(image: *TextureImage) void {
         c.vkDestroyImage(image.logical_device.device, image.texture_image, null);
         c.vkFreeMemory(image.logical_device.device, image.texture_image_memory, null);
+    }
+
+    pub fn view(image: *const TextureImage) !vk.ImageView {
+        return try vk.ImageView.init(image.texture_image, c.VK_FORMAT_R8G8B8A8_SRGB, image.logical_device);
     }
 };
 

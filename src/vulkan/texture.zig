@@ -2,6 +2,41 @@ const vk = @import("../vulkan.zig");
 const std = @import("std");
 const c = vk.c;
 
+pub const Texture = struct {
+    image: TextureImage,
+    view: vk.ImageView,
+    sampler: vk.ImageSampler,
+
+    pub fn init(
+        comptime path: []const u8,
+        logical_device: *const vk.LogicalDevice,
+        physical_device: *const vk.PhysicalDevice,
+        command_pool: *const vk.CommandPool,
+        opts: vk.ImageSampler.Options,
+    ) !Texture {
+        var image = try TextureImage.init(path, logical_device, physical_device, command_pool);
+        errdefer image.deinit();
+
+        var view = try image.view();
+        errdefer view.deinit();
+
+        var sampler = try view.sampler(physical_device, opts);
+        errdefer sampler.deinit();
+
+        return .{
+            .image = image,
+            .view = view,
+            .sampler = sampler,
+        };
+    }
+
+    pub fn deinit(texture: *Texture) void {
+        texture.sampler.deinit();
+        texture.view.deinit();
+        texture.image.deinit();
+    }
+};
+
 pub const TextureImage = struct {
     texture_image: c.VkImage,
     texture_image_memory: c.VkDeviceMemory,

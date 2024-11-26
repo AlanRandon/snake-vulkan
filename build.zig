@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
 
         const output = compile.captureStdOut();
         exe.root_module.addAnonymousImport(
-            std.mem.concat(b.allocator, u8, &[_][]const u8{ name, ".spv" }) catch unreachable,
+            std.mem.concat(b.allocator, u8, &[_][]const u8{ "spv:", name }) catch unreachable,
             .{ .root_source_file = output },
         );
     }

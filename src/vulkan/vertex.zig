@@ -204,6 +204,7 @@ pub fn VertexBuffer(comptime Vertex: type) type {
 
         logical_device: *const vk.LogicalDevice,
         raw: RawBuffer,
+        len: u32,
 
         pub fn init(
             vertices: []const Vertex,
@@ -221,6 +222,7 @@ pub fn VertexBuffer(comptime Vertex: type) type {
                     command_pool,
                 ),
                 .logical_device = logical_device,
+                .len = @intCast(vertices.len),
             };
         }
 
@@ -237,6 +239,7 @@ pub fn IndexBuffer(comptime IndexType: type) type {
 
         logical_device: *const vk.LogicalDevice,
         raw: RawBuffer,
+        len: u32,
 
         pub fn init(
             indices: []const IndexType,
@@ -254,6 +257,7 @@ pub fn IndexBuffer(comptime IndexType: type) type {
                     command_pool,
                 ),
                 .logical_device = logical_device,
+                .len = @intCast(indices.len),
             };
         }
 

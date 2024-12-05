@@ -9,6 +9,10 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     outColor = texture(texSampler, fragTexCoord);
+    // ignore transparent pixels
+    if (outColor.w == 0.0) {
+	discard;
+    }
 }
 
 // vim:ft=glsl

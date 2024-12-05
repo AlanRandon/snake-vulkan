@@ -1,51 +1,26 @@
 const std = @import("std");
 const vk = @import("../vulkan.zig");
 const Renderer = @import("../renderer.zig").Renderer(2);
-const game = @import("../game.zig");
 const Allocator = std.mem.Allocator;
+const CellTextureOffset = @import("../game.zig").CellTextureOffset;
 
 const IndexBuffer = vk.vertex.IndexBuffer(u16);
-
-const TileVertex = struct {
-    tex_coord: vk.vertex.Vec2,
-
-    const bind_desc = vk.vertex.bindVertex(TileVertex, .{
-        .binding = 0,
-    });
-
-    const attr_descs = vk.vertex.attributeDescriptions(TileVertex, .{
-        .binds = .{
-            .tex_coord = .{ .location = 1 },
-        },
-        .binding = 0,
-    });
-
-    const vertices = [_]TileVertex{
-        .{ .tex_coord = [_]f32{ 1.0, 0.0 } },
-        .{ .tex_coord = [_]f32{ 0.0, 0.0 } },
-        .{ .tex_coord = [_]f32{ 0.0, 1.0 } },
-        .{ .tex_coord = [_]f32{ 1.0, 1.0 } },
-    };
-
-    const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
-
-    const Buffer = vk.vertex.VertexBuffer(TileVertex);
-};
+const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
 
 const TileInstance = struct {
     offset: vk.vertex.Vec2,
     tile_number: vk.vertex.Scalar,
 
     const bind_desc = vk.vertex.bindInstanced(TileInstance, .{
-        .binding = 1,
+        .binding = 0,
     });
 
     const attr_descs = vk.vertex.attributeDescriptions(TileInstance, .{
         .binds = .{
-            .offset = .{ .location = 2 },
-            .tile_number = .{ .location = 3 },
+            .offset = .{ .location = 0 },
+            .tile_number = .{ .location = 1 },
         },
-        .binding = 1,
+        .binding = 0,
     });
 
     const Buffer = vk.vertex.VertexBuffer(TileInstance);
@@ -54,15 +29,6 @@ const TileInstance = struct {
 const ShaderGlobals = struct {
     window_size: vk.vertex.Vec2,
     cell_size: vk.vertex.Vec2,
-};
-
-const cells = [_]TileInstance{
-    .{ .offset = [_]f32{ 0.0, 0.0 }, .tile_number = 1.0 },
-    .{ .offset = [_]f32{ 1.0, 0.0 }, .tile_number = 0.0 },
-    .{ .offset = [_]f32{ 2.0, 0.0 }, .tile_number = 1.0 },
-    .{ .offset = [_]f32{ 3.0, 0.0 }, .tile_number = 2.0 },
-    .{ .offset = [_]f32{ 4.0, 0.0 }, .tile_number = 2.0 },
-    .{ .offset = [_]f32{ 5.0, 0.0 }, .tile_number = 1.0 },
 };
 
 pub const GameRenderer = struct {
@@ -86,7 +52,6 @@ pub const GameRenderer = struct {
         globals: ShaderGlobals,
     },
     buffers: struct {
-        vertex: TileVertex.Buffer,
         index: IndexBuffer,
         instance: TileInstance.Buffer,
     },
@@ -138,8 +103,8 @@ pub const GameRenderer = struct {
             &frag_shader,
             &swap_chain,
             .{
-                .vertex_binding_descs = &[_]vk.vertex.BindDesc{ TileVertex.bind_desc, TileInstance.bind_desc },
-                .vertex_attribute_descs = &(TileVertex.attr_descs ++ TileInstance.attr_descs),
+                .vertex_binding_descs = &[_]vk.vertex.BindDesc{TileInstance.bind_desc},
+                .vertex_attribute_descs = &TileInstance.attr_descs,
             },
         );
         errdefer pipeline.deinit();
@@ -162,13 +127,15 @@ pub const GameRenderer = struct {
         var tiles = try vk.texture.Texture.init("asset:tiles.png", logical_device, physical_device, &command_pool, .{});
         errdefer tiles.deinit();
 
-        var vertex_buffer = try TileVertex.Buffer.init(&TileVertex.vertices, logical_device, physical_device, &command_pool);
-        errdefer vertex_buffer.deinit();
-
-        var instance_buffer = try TileInstance.Buffer.init(&cells, logical_device, physical_device, &command_pool);
+        var instance_buffer = try TileInstance.Buffer.init(
+            &[_]TileInstance{.{ .offset = [_]f32{ 0.0, 0.0 }, .tile_number = 0.0 }},
+            logical_device,
+            physical_device,
+            &command_pool,
+        );
         errdefer instance_buffer.deinit();
 
-        var index_buffer = try IndexBuffer.init(&TileVertex.indices, logical_device, physical_device, &command_pool);
+        var index_buffer = try IndexBuffer.init(&indices, logical_device, physical_device, &command_pool);
         errdefer index_buffer.deinit();
 
         renderer.updateDescriptorSets(
@@ -204,7 +171,6 @@ pub const GameRenderer = struct {
             .renderer = renderer,
             .tiles = tiles,
             .buffers = .{
-                .vertex = vertex_buffer,
                 .index = index_buffer,
                 .instance = instance_buffer,
             },
@@ -223,7 +189,6 @@ pub const GameRenderer = struct {
     }
 
     pub fn deinit(renderer: *GameRenderer) void {
-        renderer.buffers.vertex.deinit();
         renderer.buffers.index.deinit();
         renderer.buffers.instance.deinit();
         renderer.tiles.deinit();
@@ -262,8 +227,59 @@ pub const GameRenderer = struct {
         );
     }
 
-    pub fn render(renderer: *GameRenderer, opts: struct { framebuffer_resized: *bool }) !void {
+    pub fn render(renderer: *GameRenderer, game: anytype, opts: struct { framebuffer_resized: *bool }) !void {
         var result: vk.c.VkResult = undefined;
+
+        const cell_count = game.rows * game.cols;
+        var rendered_cells: [cell_count * 2]TileInstance = undefined;
+        var rendered_cell_count: usize = 0;
+        for (game.cells, 0..) |cell, i| {
+            const offset = [_]f32{
+                @floatFromInt(i % game.cols),
+                @floatFromInt(@divFloor(i, game.cols)),
+            };
+
+            rendered_cells[rendered_cell_count] = .{
+                .offset = offset,
+                .tile_number = @floatFromInt(@intFromEnum(cell.background)),
+            };
+            rendered_cell_count += 1;
+
+            switch (cell.state) {
+                .empty => {},
+                .head => {
+                    // std.debug.panic("TODO: render head", .{});
+                    rendered_cells[rendered_cell_count] = .{
+                        .offset = offset,
+                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.head)),
+                    };
+                    rendered_cell_count += 1;
+                },
+                .tail => {
+                    rendered_cells[rendered_cell_count] = .{
+                        .offset = offset,
+                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.tail)),
+                    };
+                    rendered_cell_count += 1;
+                },
+                .apple => {
+                    std.debug.panic("TODO: render apple", .{});
+                },
+                .wall => {
+                    std.debug.panic("TODO: render wall", .{});
+                },
+            }
+        }
+
+        _ = vk.c.vkDeviceWaitIdle(renderer.swap_chain.logical_device.device);
+        renderer.buffers.instance.deinit();
+        renderer.buffers.instance = try TileInstance.Buffer.init(
+            rendered_cells[0..rendered_cell_count],
+            renderer.logical_device,
+            renderer.physical_device,
+            &renderer.command_pool,
+        );
+
         const frame = renderer.renderer.begin_frame(
             &renderer.swap_chain,
             &renderer.render_pass,
@@ -284,7 +300,7 @@ pub const GameRenderer = struct {
 
         frame.bindDescriptorSets(&renderer.pipeline_layout);
         frame.commandBuffer().bindIndexBuffer(&renderer.buffers.index);
-        frame.commandBuffer().bindVertexBuffers(.{ &renderer.buffers.vertex, &renderer.buffers.instance });
+        frame.commandBuffer().bindVertexBuffers(.{&renderer.buffers.instance});
         frame.commandBuffer().pushConstants(&renderer.pipeline_layout, &renderer.shader_modules.globals, .{ .index = 0 });
         vk.c.vkCmdDrawIndexed(frame.commandBuffer().buffer, renderer.buffers.index.len, renderer.buffers.instance.len, 0, 0, 0);
 

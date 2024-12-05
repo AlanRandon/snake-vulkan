@@ -1127,6 +1127,10 @@ pub const CommandBuffer = struct {
             constant,
         );
     }
+
+    pub fn free(buffer: *const CommandBuffer, pool: *const CommandPool) void {
+        _ = c.vkFreeCommandBuffers(pool.logical_device, pool.pool, 1, &buffer);
+    }
 };
 
 pub const DescriptorPool = struct {

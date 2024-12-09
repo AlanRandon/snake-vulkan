@@ -10,6 +10,8 @@ const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
 const TileInstance = struct {
     offset: vk.vertex.Vec2,
     tile_number: vk.vertex.Scalar,
+    transform: vk.vertex.Vec4,
+    translate: vk.vertex.Vec2,
 
     const bind_desc = vk.vertex.bindInstanced(TileInstance, .{
         .binding = 0,
@@ -19,6 +21,8 @@ const TileInstance = struct {
         .binds = .{
             .offset = .{ .location = 0 },
             .tile_number = .{ .location = 1 },
+            .transform = .{ .location = 2 },
+            .translate = .{ .location = 4 },
         },
         .binding = 0,
     });
@@ -61,6 +65,7 @@ pub const GameRenderer = struct {
         physical_device: *const vk.PhysicalDevice,
         window: *const vk.GlfwWindow,
         surface: *const vk.Surface,
+        game: anytype,
         allocator: Allocator,
     ) !GameRenderer {
         var vert_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:shader.vert");
@@ -128,7 +133,12 @@ pub const GameRenderer = struct {
         errdefer tiles.deinit();
 
         var instance_buffer = try TileInstance.Buffer.init(
-            &[_]TileInstance{.{ .offset = [_]f32{ 0.0, 0.0 }, .tile_number = 0.0 }},
+            &[_]TileInstance{.{
+                .offset = [_]f32{ 0.0, 0.0 },
+                .tile_number = 0.0,
+                .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                .translate = [_]f32{ 0.0, 0.0 },
+            }},
             logical_device,
             physical_device,
             &command_pool,
@@ -151,9 +161,8 @@ pub const GameRenderer = struct {
             }},
         );
 
-        // TODO
-        const rows = 10;
-        const cols = 10;
+        const rows = game.rows;
+        const cols = game.cols;
 
         return .{
             .allocator = allocator,
@@ -242,23 +251,103 @@ pub const GameRenderer = struct {
             rendered_cells[rendered_cell_count] = .{
                 .offset = offset,
                 .tile_number = @floatFromInt(@intFromEnum(cell.background)),
+                .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                .translate = [_]f32{ 0.0, 0.0 },
             };
             rendered_cell_count += 1;
 
             switch (cell.state) {
                 .empty => {},
-                .head => {
-                    // std.debug.panic("TODO: render head", .{});
+                .head => |head| {
+                    const tile_number: f32 = @floatFromInt(@intFromEnum(CellTextureOffset.head));
+                    const transform: struct {
+                        transform: [4]f32,
+                        translate: [2]f32,
+                    } = switch (head.facing) {
+                        .east => .{
+                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                        },
+                        .west => .{
+                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 0.0, 0.0 },
+                        },
+                        .north => .{
+                            .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                        },
+                        .south => .{
+                            .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
+                            .translate = [_]f32{ 0.0, 1.0 },
+                        },
+                    };
+
                     rendered_cells[rendered_cell_count] = .{
                         .offset = offset,
-                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.head)),
+                        .tile_number = tile_number,
+                        .transform = transform.transform,
+                        .translate = transform.translate,
                     };
                     rendered_cell_count += 1;
                 },
-                .tail => {
+                .tail => |tail| {
+                    const transform: struct {
+                        transform: [4]f32,
+                        translate: [2]f32,
+                        tile_number: CellTextureOffset,
+                    } = if (tail.ttl <= 1) switch (tail.to) {
+                        .east => .{
+                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                            .tile_number = .tail_end,
+                        },
+                        .west => .{
+                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 0.0, 0.0 },
+                            .tile_number = .tail_end,
+                        },
+                        .north => .{
+                            .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                            .tile_number = .tail_end,
+                        },
+                        .south => .{
+                            .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
+                            .translate = [_]f32{ 0.0, 1.0 },
+                            .tile_number = .tail_end,
+                        },
+                    } else if (tail.to == tail.from.opposite()) switch (tail.to) {
+                        .east => .{
+                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                            .tile_number = .tail,
+                        },
+                        .west => .{
+                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 0.0, 0.0 },
+                            .tile_number = .tail,
+                        },
+                        .north => .{
+                            .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
+                            .tile_number = .tail,
+                        },
+                        .south => .{
+                            .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
+                            .translate = [_]f32{ 0.0, 1.0 },
+                            .tile_number = .tail,
+                        },
+                    } else .{
+                        .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                        .translate = [_]f32{ 0.0, 0.0 },
+                        .tile_number = .tail_corner,
+                    };
+
                     rendered_cells[rendered_cell_count] = .{
                         .offset = offset,
-                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.tail)),
+                        .tile_number = @floatFromInt(@intFromEnum(transform.tile_number)),
+                        .transform = transform.transform,
+                        .translate = transform.translate,
                     };
                     rendered_cell_count += 1;
                 },

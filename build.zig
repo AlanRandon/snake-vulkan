@@ -13,7 +13,9 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
-    exe.addCSourceFile(.{ .file = b.path("src/stb_wrapper.c") });
+    exe.linkSystemLibrary("ao");
+    exe.linkSystemLibrary("mpg123");
+    exe.addCSourceFile(.{ .file = b.path("src/lib_wrapper.c") });
 
     {
         var assets = std.fs.openDirAbsolute(b.path("./assets").getPath(b), .{ .iterate = true }) catch unreachable;

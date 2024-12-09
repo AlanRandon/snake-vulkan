@@ -94,11 +94,11 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
                         const col = i % cols;
                         const row = i / rows;
 
-                        new_head_index = switch (head.facing) {
+                        new_head_index = switch (direction) {
                             .north => (row + rows - 1) % rows,
                             .south => (row + 1) % rows,
                             else => row,
-                        } * cols + switch (head.facing) {
+                        } * cols + switch (direction) {
                             .east => (col + 1) % cols,
                             .west => (col + cols - 1) % cols,
                             else => col,
@@ -128,7 +128,8 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
                         },
                     };
                 },
-                else => return error.SnakeCollided,
+                .tail, .wall, .head => return error.SnakeCollided,
+                .apple => std.debug.panic("TODO: apples", .{}),
             }
 
             game.cells = cells;

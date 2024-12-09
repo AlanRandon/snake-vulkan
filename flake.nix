@@ -13,7 +13,7 @@
       in
       {
         devShell = pkgs.mkShell {
-          shellHook = "exec \${SHELL:=sh}";
+          shellHook = "exec zsh";
 
           VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
           VULKAN_SDK = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
@@ -28,6 +28,8 @@
               shaderc
               stb
               glfw
+              libmpg123
+              libao
             ];
         };
       }

@@ -4,6 +4,7 @@ const Renderer = @import("./renderer.zig").Renderer(2);
 const Game = @import("./game.zig").Game;
 const Direction = @import("./game.zig").Direction;
 const GameRenderer = @import("./game/renderer.zig").GameRenderer;
+const audio = @import("./audio.zig");
 
 const Controls = struct {
     const KeyState = enum { pressed, released };
@@ -38,6 +39,16 @@ const Controls = struct {
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
+    var sound = try audio.Audio.init(allocator);
+    defer sound.deinit();
+
+    var scream = try sound.sound(@embedFile("asset:sound.mp3"));
+    defer scream.deinit();
+
+    var thread_pool: std.Thread.Pool = undefined;
+    try thread_pool.init(.{ .allocator = allocator });
+    defer thread_pool.deinit();
+
     var game = Game(10, 10).init(3);
     game.put_head(1, 0);
 
@@ -66,6 +77,7 @@ pub fn main() !void {
         &physical_device,
         &window,
         &surface,
+        &game,
         allocator,
     );
     defer gr.deinit();
@@ -87,6 +99,7 @@ pub fn main() !void {
             game.move(controls.direction) catch |err| switch (err) {
                 error.SnakeCollided => {
                     std.debug.print("You lost\n", .{});
+                    try scream.playInThreadPool(&thread_pool);
                     break;
                 },
                 else => return err,

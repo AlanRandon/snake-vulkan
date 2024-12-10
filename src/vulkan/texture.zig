@@ -8,13 +8,13 @@ pub const Texture = struct {
     sampler: vk.ImageSampler,
 
     pub fn init(
-        comptime path: []const u8,
+        data: []const u8,
         logical_device: *const vk.LogicalDevice,
         physical_device: *const vk.PhysicalDevice,
         command_pool: *const vk.CommandPool,
         opts: vk.ImageSampler.Options,
     ) !Texture {
-        var image = try TextureImage.init(path, logical_device, physical_device, command_pool);
+        var image = try TextureImage.init(data, logical_device, physical_device, command_pool);
         errdefer image.deinit();
 
         var view = try image.view();
@@ -43,18 +43,17 @@ pub const TextureImage = struct {
     logical_device: *const vk.LogicalDevice,
 
     pub fn init(
-        comptime path: []const u8,
+        data: []const u8,
         logical_device: *const vk.LogicalDevice,
         physical_device: *const vk.PhysicalDevice,
         command_pool: *const vk.CommandPool,
     ) !TextureImage {
-        const data = @embedFile(path);
         var width: c_int = undefined;
         var height: c_int = undefined;
         var channels: c_int = undefined;
         const pixels: *c.stbi_uc = c.stbi_load_from_memory(
             data.ptr,
-            data.len,
+            @intCast(data.len),
             &width,
             &height,
             &channels,

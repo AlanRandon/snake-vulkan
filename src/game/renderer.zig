@@ -66,6 +66,7 @@ pub const GameRenderer = struct {
         window: *const vk.GlfwWindow,
         surface: *const vk.Surface,
         game: anytype,
+        tile_image_data: []const u8,
         allocator: Allocator,
     ) !GameRenderer {
         var vert_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:shader.vert");
@@ -129,7 +130,7 @@ pub const GameRenderer = struct {
         );
         errdefer renderer.deinit();
 
-        var tiles = try vk.texture.Texture.init("asset:tiles.png", logical_device, physical_device, &command_pool, .{});
+        var tiles = try vk.texture.Texture.init(tile_image_data, logical_device, physical_device, &command_pool, .{});
         errdefer tiles.deinit();
 
         var instance_buffer = try TileInstance.Buffer.init(
@@ -295,7 +296,7 @@ pub const GameRenderer = struct {
                         transform: [4]f32,
                         translate: [2]f32,
                         tile_number: CellTextureOffset,
-                    } = if (tail.ttl <= 1) switch (tail.to) {
+                    } = if (tail.ticks_alive >= game.tail_length) switch (tail.to) {
                         .east => .{
                             .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
                             .translate = [_]f32{ 1.0, 0.0 },
@@ -316,28 +317,82 @@ pub const GameRenderer = struct {
                             .translate = [_]f32{ 0.0, 1.0 },
                             .tile_number = .tail_end,
                         },
-                    } else if (tail.to == tail.from.opposite()) switch (tail.to) {
-                        .east => .{
-                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                            .translate = [_]f32{ 1.0, 0.0 },
-                            .tile_number = .tail,
+                    } else switch (tail.from) {
+                        .west => switch (tail.to) {
+                            .east => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail,
+                            },
+                            .north => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            .south => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, -1.0 },
+                                .translate = [_]f32{ 1.0, 1.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            else => std.debug.panic("cannot render malformed tail", .{}),
                         },
-                        .west => .{
-                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
-                            .translate = [_]f32{ 0.0, 0.0 },
-                            .tile_number = .tail,
+                        .east => switch (tail.to) {
+                            .west => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail,
+                            },
+                            .north => .{
+                                .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 0.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            .south => .{
+                                .transform = [_]f32{ 1.0, 0.0, 0.0, -1.0 },
+                                .translate = [_]f32{ 0.0, 1.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            else => std.debug.panic("cannot render malformed tail", .{}),
                         },
-                        .north => .{
-                            .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
-                            .translate = [_]f32{ 1.0, 0.0 },
-                            .tile_number = .tail,
+                        .south => switch (tail.to) {
+                            .north => .{
+                                .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail,
+                            },
+                            .east => .{
+                                .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            .west => .{
+                                .transform = [_]f32{ 0.0, -1.0, -1.0, 0.0 },
+                                .translate = [_]f32{ 1.0, 1.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            else => std.debug.panic("cannot render malformed tail", .{}),
                         },
-                        .south => .{
-                            .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
-                            .translate = [_]f32{ 0.0, 1.0 },
-                            .tile_number = .tail,
+                        .north => switch (tail.to) {
+                            .south => .{
+                                .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
+                                .translate = [_]f32{ 0.0, 1.0 },
+                                .tile_number = .tail,
+                            },
+                            .east => .{
+                                .transform = [_]f32{ 0.0, 1.0, 1.0, 0.0 },
+                                .translate = [_]f32{ 0.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            .west => .{
+                                .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
+                                .translate = [_]f32{ 0.0, 1.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            else => std.debug.panic("cannot render malformed tail", .{}),
                         },
-                    } else .{
+                    };
+
+                    _ = .{
                         .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
                         .translate = [_]f32{ 0.0, 0.0 },
                         .tile_number = .tail_corner,
@@ -352,10 +407,22 @@ pub const GameRenderer = struct {
                     rendered_cell_count += 1;
                 },
                 .apple => {
-                    std.debug.panic("TODO: render apple", .{});
+                    rendered_cells[rendered_cell_count] = .{
+                        .offset = offset,
+                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.apple)),
+                        .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                        .translate = [_]f32{ 0.0, 0.0 },
+                    };
+                    rendered_cell_count += 1;
                 },
                 .wall => {
-                    std.debug.panic("TODO: render wall", .{});
+                    rendered_cells[rendered_cell_count] = .{
+                        .offset = offset,
+                        .tile_number = @floatFromInt(@intFromEnum(CellTextureOffset.wall)),
+                        .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                        .translate = [_]f32{ 0.0, 0.0 },
+                    };
+                    rendered_cell_count += 1;
                 },
             }
         }

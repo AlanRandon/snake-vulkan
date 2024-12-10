@@ -10,8 +10,9 @@ const Controls = struct {
     const KeyState = enum { pressed, released };
 
     window: *const vk.GlfwWindow,
-    states: [4]KeyState = [_]KeyState{.released} ** 4,
+    states: [5]KeyState = [_]KeyState{.released} ** 5,
     direction: Direction = .east,
+    paused: bool = false,
 
     fn read(controls: *Controls) void {
         inline for (.{
@@ -19,8 +20,8 @@ const Controls = struct {
             .{ .key = vk.c.GLFW_KEY_J, .direction = Direction.south },
             .{ .key = vk.c.GLFW_KEY_K, .direction = Direction.north },
             .{ .key = vk.c.GLFW_KEY_L, .direction = Direction.east },
-        }) |key| {
-            const state = &controls.states[@intFromEnum(key.direction)];
+        }, 0..) |key, i| {
+            const state = &controls.states[i];
             switch (vk.c.glfwGetKey(controls.window.window, key.key)) {
                 vk.c.GLFW_PRESS => if (state.* == .released) {
                     if (controls.direction.opposite() != key.direction) {
@@ -32,6 +33,15 @@ const Controls = struct {
                 vk.c.GLFW_RELEASE => state.* = .released,
                 else => std.debug.panic("invalid key state", .{}),
             }
+        }
+
+        switch (vk.c.glfwGetKey(controls.window.window, vk.c.GLFW_KEY_P)) {
+            vk.c.GLFW_PRESS => if (controls.states[4] == .released) {
+                controls.paused = !controls.paused;
+                controls.states[4] = .pressed;
+            },
+            vk.c.GLFW_RELEASE => controls.states[4] = .released,
+            else => std.debug.panic("invalid key state", .{}),
         }
     }
 };
@@ -49,8 +59,15 @@ pub fn main() !void {
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
-    var game = Game(10, 10).init(3);
-    game.put_head(1, 0);
+    var rng = std.Random.DefaultPrng.init(0);
+    var game = Game(10, 10).init(3, rng.random());
+    game.put_head(7, 1);
+
+    for (0..3) |_| {
+        try game.move(.east);
+    }
+
+    game.spawn_apple();
 
     var window = try vk.GlfwWindow.init(800, 600, "Vulkan");
     defer window.deinit();
@@ -78,6 +95,7 @@ pub fn main() !void {
         &window,
         &surface,
         &game,
+        @embedFile("asset:tiles.png"),
         allocator,
     );
     defer gr.deinit();
@@ -93,16 +111,15 @@ pub fn main() !void {
         controls.read();
 
         const now = try std.time.Instant.now();
-        if (now.since(last_tick) >= 200_000_000) {
+        if (now.since(last_tick) >= 200_000_000 and !controls.paused) {
             last_tick = now;
 
             game.move(controls.direction) catch |err| switch (err) {
                 error.SnakeCollided => {
                     std.debug.print("You lost\n", .{});
                     try scream.playInThreadPool(&thread_pool);
-                    break;
+                    controls.paused = true;
                 },
-                else => return err,
             };
         }
 

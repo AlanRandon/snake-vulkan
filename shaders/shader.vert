@@ -31,9 +31,9 @@ void main() {
 	vec2 viewSize = vec2(minAxis) / winSize * 2.;
 	vec2 posInGrid = (inOffset + vertices[gl_VertexIndex]);
 	vec2 pos = (posInGrid * cellSize - vec2(0.5)) * viewSize;
-	gl_Position = vec4(pos, 0.0, 1.0);
+	gl_Position = vec4(pos, 0., 1.);
 	vec2 texVertex = (mat2x2(cellTransform) * texVertices[gl_VertexIndex]) + cellTranslate;
-	fragTexCoord = (texVertex + vec2(inTileNumber, 0.0)) * vec2(0.125, 1.0);
+	fragTexCoord = (texVertex + vec2(inTileNumber, 0.)) * vec2(1. / 9., 1.);
 }
 
 // vim:ft=glsl

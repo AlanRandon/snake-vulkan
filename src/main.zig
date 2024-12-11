@@ -12,6 +12,7 @@ const Controls = struct {
     window: *const vk.GlfwWindow,
     states: [5]KeyState = [_]KeyState{.released} ** 5,
     direction: Direction = .east,
+    inhibited_direction: Direction,
     paused: bool = false,
 
     fn read(controls: *Controls) void {
@@ -24,7 +25,7 @@ const Controls = struct {
             const state = &controls.states[i];
             switch (vk.c.glfwGetKey(controls.window.window, key.key)) {
                 vk.c.GLFW_PRESS => if (state.* == .released) {
-                    if (controls.direction.opposite() != key.direction) {
+                    if (controls.inhibited_direction != key.direction) {
                         controls.direction = key.direction;
                     }
 
@@ -46,25 +47,85 @@ const Controls = struct {
     }
 };
 
+const GameAssetBundle = struct {
+    game_over_sound: audio.Sound,
+    eat_sound: audio.Sound,
+    tiles_texture: vk.texture.Texture,
+
+    pub fn init(
+        sound: *audio.Audio,
+        logical_device: *const vk.LogicalDevice,
+        physical_device: *const vk.PhysicalDevice,
+        command_pool: *const vk.CommandPool,
+        game_over_data: []const u8,
+        eat_data: []const u8,
+        tiles_data: []const u8,
+    ) !GameAssetBundle {
+        var game_over_sound = try sound.sound(game_over_data);
+        errdefer game_over_sound.deinit();
+        var eat_sound = try sound.sound(eat_data);
+        errdefer eat_sound.deinit();
+        var tiles = try vk.texture.Texture.init(
+            tiles_data,
+            logical_device,
+            physical_device,
+            command_pool,
+            .{},
+        );
+        errdefer tiles.deinit();
+
+        return .{
+            .game_over_sound = game_over_sound,
+            .eat_sound = eat_sound,
+            .tiles_texture = tiles,
+        };
+    }
+
+    pub fn deinit(assets: *GameAssetBundle) void {
+        assets.game_over_sound.deinit();
+        assets.eat_sound.deinit();
+        assets.tiles_texture.deinit();
+    }
+};
+
+const Map = struct {
+    const Point = [2]u8;
+
+    walls: []const struct { location: Point },
+    head: struct { location: Point, initial_growth: u8, direction: Direction },
+};
+
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
     var sound = try audio.Audio.init(allocator);
     defer sound.deinit();
 
-    var scream = try sound.sound(@embedFile("asset:sound.mp3"));
-    defer scream.deinit();
-
     var thread_pool: std.Thread.Pool = undefined;
     try thread_pool.init(.{ .allocator = allocator });
     defer thread_pool.deinit();
 
-    var rng = std.Random.DefaultPrng.init(0);
-    var game = Game(10, 10).init(3, rng.random());
-    game.put_head(7, 1);
+    var map = try std.json.parseFromSlice(
+        Map,
+        allocator,
+        @embedFile("asset:map.json"),
+        .{},
+    );
+    defer map.deinit();
 
-    for (0..3) |_| {
-        try game.move(.east);
+    var rng = std.Random.DefaultPrng.init(0);
+
+    const head = map.value.head;
+    var game = Game(10, 10).init(head.initial_growth, rng.random());
+
+    for (map.value.walls) |wall| {
+        game.put_wall(wall.location[0], wall.location[1]);
+    }
+
+    game.put_head(head.location[0], head.location[1]);
+
+    for (0..head.initial_growth) |_| {
+        _ = game.move(head.direction);
     }
 
     game.spawn_apple();
@@ -89,20 +150,49 @@ pub fn main() !void {
     var logical_device = try vk.LogicalDevice.init(&physical_device, &surface, allocator);
     defer logical_device.deinit();
 
+    var command_pool = try vk.CommandPool.init(&physical_device, &logical_device);
+    defer command_pool.deinit();
+
+    var swap_chain = try vk.SwapChain.init(&window, &surface, &physical_device, &logical_device, allocator);
+    defer swap_chain.deinit();
+
+    var render_pass = try vk.RenderPass.init(&swap_chain);
+    defer render_pass.deinit();
+
+    var framebuffers = try vk.Framebuffers.init(&render_pass, &swap_chain, allocator);
+    defer framebuffers.deinit();
+
+    var assets = try GameAssetBundle.init(
+        &sound,
+        &logical_device,
+        &physical_device,
+        &command_pool,
+        @embedFile("asset:game-over.mp3"),
+        @embedFile("asset:eat.mp3"),
+        @embedFile("asset:tiles.png"),
+    );
+    defer assets.deinit();
+
     var gr = try GameRenderer.init(
         &logical_device,
         &physical_device,
+        &command_pool,
         &window,
         &surface,
+        &swap_chain,
+        &framebuffers,
+        &render_pass,
         &game,
-        @embedFile("asset:tiles.png"),
+        &assets.tiles_texture,
         allocator,
     );
     defer gr.deinit();
 
     var last_tick = try std.time.Instant.now();
 
-    var controls = Controls{ .window = &window };
+    var controls = Controls{ .window = &window, .inhibited_direction = .west };
+
+    var tick_ns: usize = 200_000_000;
 
     while (vk.c.glfwWindowShouldClose(window.window) == 0) {
         framebuffer_resized = false;
@@ -111,16 +201,21 @@ pub fn main() !void {
         controls.read();
 
         const now = try std.time.Instant.now();
-        if (now.since(last_tick) >= 200_000_000 and !controls.paused) {
+        if (now.since(last_tick) >= tick_ns and !controls.paused) {
             last_tick = now;
 
-            game.move(controls.direction) catch |err| switch (err) {
-                error.SnakeCollided => {
-                    std.debug.print("You lost\n", .{});
-                    try scream.playInThreadPool(&thread_pool);
+            controls.inhibited_direction = controls.direction.opposite();
+            switch (game.move(controls.direction)) {
+                .move => {},
+                .game_over => {
+                    try assets.game_over_sound.playInThreadPool(&thread_pool);
                     controls.paused = true;
+                    tick_ns = @max(tick_ns - 10_000_000, 120_000_000);
                 },
-            };
+                .eat => {
+                    try assets.eat_sound.playInThreadPool(&thread_pool);
+                },
+            }
         }
 
         try gr.render(&game, .{ .framebuffer_resized = &framebuffer_resized });

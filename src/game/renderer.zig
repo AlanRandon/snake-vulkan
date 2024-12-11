@@ -41,15 +41,15 @@ pub const GameRenderer = struct {
     physical_device: *const vk.PhysicalDevice,
     window: *const vk.GlfwWindow,
     surface: *const vk.Surface,
-    swap_chain: vk.SwapChain,
-    render_pass: vk.RenderPass,
+    command_pool: *const vk.CommandPool,
+    swap_chain: *vk.SwapChain,
+    framebuffers: *vk.Framebuffers,
+    render_pass: *const vk.RenderPass,
+    tiles: *const vk.texture.Texture,
     pipeline_layout: vk.PipelineLayout,
     descriptor_set_layout: vk.DescriptorSetLayout,
     pipeline: vk.Pipeline,
-    framebuffers: vk.Framebuffers,
-    command_pool: vk.CommandPool,
     renderer: Renderer,
-    tiles: vk.texture.Texture,
     shader_modules: struct {
         vert: vk.ShaderModule,
         frag: vk.ShaderModule,
@@ -63,10 +63,14 @@ pub const GameRenderer = struct {
     pub fn init(
         logical_device: *const vk.LogicalDevice,
         physical_device: *const vk.PhysicalDevice,
+        command_pool: *const vk.CommandPool,
         window: *const vk.GlfwWindow,
         surface: *const vk.Surface,
+        swap_chain: *vk.SwapChain,
+        framebuffers: *vk.Framebuffers,
+        render_pass: *const vk.RenderPass,
         game: anytype,
-        tile_image_data: []const u8,
+        tile_texture: *const vk.texture.Texture,
         allocator: Allocator,
     ) !GameRenderer {
         var vert_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:shader.vert");
@@ -96,18 +100,12 @@ pub const GameRenderer = struct {
         );
         errdefer pipeline_layout.deinit();
 
-        var swap_chain = try vk.SwapChain.init(window, surface, physical_device, logical_device, allocator);
-        errdefer swap_chain.deinit();
-
-        var render_pass = try vk.RenderPass.init(&swap_chain);
-        errdefer render_pass.deinit();
-
         var pipeline = try vk.Pipeline.init(
             &pipeline_layout,
-            &render_pass,
+            render_pass,
             &vert_shader,
             &frag_shader,
-            &swap_chain,
+            swap_chain,
             .{
                 .vertex_binding_descs = &[_]vk.vertex.BindDesc{TileInstance.bind_desc},
                 .vertex_attribute_descs = &TileInstance.attr_descs,
@@ -115,23 +113,14 @@ pub const GameRenderer = struct {
         );
         errdefer pipeline.deinit();
 
-        var framebuffers = try vk.Framebuffers.init(&render_pass, &swap_chain, allocator);
-        errdefer framebuffers.deinit();
-
-        var command_pool = try vk.CommandPool.init(physical_device, logical_device);
-        errdefer command_pool.deinit();
-
         var renderer = try Renderer.init(
-            &command_pool,
+            command_pool,
             &descriptor_set_layout,
             .{
                 .descriptor_set_types = &[_]vk.c.VkDescriptorType{vk.c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
             },
         );
         errdefer renderer.deinit();
-
-        var tiles = try vk.texture.Texture.init(tile_image_data, logical_device, physical_device, &command_pool, .{});
-        errdefer tiles.deinit();
 
         var instance_buffer = try TileInstance.Buffer.init(
             &[_]TileInstance{.{
@@ -142,11 +131,11 @@ pub const GameRenderer = struct {
             }},
             logical_device,
             physical_device,
-            &command_pool,
+            command_pool,
         );
         errdefer instance_buffer.deinit();
 
-        var index_buffer = try IndexBuffer.init(&indices, logical_device, physical_device, &command_pool);
+        var index_buffer = try IndexBuffer.init(&indices, logical_device, physical_device, command_pool);
         errdefer index_buffer.deinit();
 
         renderer.updateDescriptorSets(
@@ -155,8 +144,8 @@ pub const GameRenderer = struct {
                 .binding = 0,
                 .data = .{
                     .image = .{
-                        .view = &tiles.view,
-                        .sampler = &tiles.sampler,
+                        .view = &tile_texture.view,
+                        .sampler = &tile_texture.sampler,
                     },
                 },
             }},
@@ -179,7 +168,7 @@ pub const GameRenderer = struct {
             .framebuffers = framebuffers,
             .command_pool = command_pool,
             .renderer = renderer,
-            .tiles = tiles,
+            .tiles = tile_texture,
             .buffers = .{
                 .index = index_buffer,
                 .instance = instance_buffer,
@@ -201,15 +190,10 @@ pub const GameRenderer = struct {
     pub fn deinit(renderer: *GameRenderer) void {
         renderer.buffers.index.deinit();
         renderer.buffers.instance.deinit();
-        renderer.tiles.deinit();
         renderer.renderer.deinit();
-        renderer.render_pass.deinit();
         renderer.pipeline.deinit();
         renderer.pipeline_layout.deinit();
         renderer.descriptor_set_layout.deinit();
-        renderer.command_pool.deinit();
-        renderer.framebuffers.deinit();
-        renderer.swap_chain.deinit();
         renderer.shader_modules.vert.deinit();
         renderer.shader_modules.frag.deinit();
     }
@@ -223,16 +207,16 @@ pub const GameRenderer = struct {
         _ = vk.c.vkDeviceWaitIdle(renderer.swap_chain.logical_device.device);
         renderer.framebuffers.deinit();
         renderer.swap_chain.deinit();
-        renderer.swap_chain = try vk.SwapChain.init(
+        renderer.swap_chain.* = try vk.SwapChain.init(
             renderer.window,
             renderer.surface,
             renderer.physical_device,
             renderer.logical_device,
             renderer.allocator,
         );
-        renderer.framebuffers = try vk.Framebuffers.init(
-            &renderer.render_pass,
-            &renderer.swap_chain,
+        renderer.framebuffers.* = try vk.Framebuffers.init(
+            renderer.render_pass,
+            renderer.swap_chain,
             renderer.allocator,
         );
     }
@@ -338,8 +322,8 @@ pub const GameRenderer = struct {
                         },
                         .east => switch (tail.to) {
                             .west => .{
-                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                                .translate = [_]f32{ 1.0, 0.0 },
+                                .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 0.0, 0.0 },
                                 .tile_number = .tail,
                             },
                             .north => .{
@@ -433,13 +417,13 @@ pub const GameRenderer = struct {
             rendered_cells[0..rendered_cell_count],
             renderer.logical_device,
             renderer.physical_device,
-            &renderer.command_pool,
+            renderer.command_pool,
         );
 
         const frame = renderer.renderer.begin_frame(
-            &renderer.swap_chain,
-            &renderer.render_pass,
-            &renderer.framebuffers,
+            renderer.swap_chain,
+            renderer.render_pass,
+            renderer.framebuffers,
             &renderer.pipeline,
             .{ .error_payload = &result },
         ) catch |err| switch (err) {

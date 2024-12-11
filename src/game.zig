@@ -95,7 +95,7 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
         pub fn spawn_apple(game: *Self) void {
             // TODO: handle grid full
             while (true) {
-                const index = game.rng.intRangeAtMost(u8, 0, size);
+                const index = game.rng.intRangeAtMost(usize, 0, size);
                 const cell = &game.cells[index];
                 if (cell.state == .empty) {
                     cell.state = .apple;
@@ -104,7 +104,13 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
             }
         }
 
-        pub fn move(game: *Self, direction: Direction) !void {
+        const MoveResult = enum {
+            move,
+            game_over,
+            eat,
+        };
+
+        pub fn move(game: *Self, direction: Direction) MoveResult {
             var cells: [size]Cell = undefined;
             var head_index: usize = undefined;
 
@@ -154,8 +160,20 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
                     };
 
                     game.cells = cells;
+                    return .move;
                 },
-                .tail, .wall, .head => return error.SnakeCollided,
+                .tail, .wall, .head => {
+                    game.tail_length = 0;
+
+                    for (game.cells) |cell| {
+                        switch (cell.state) {
+                            .tail => game.tail_length += 1,
+                            else => {},
+                        }
+                    }
+
+                    return .game_over;
+                },
                 .apple => {
                     cells[new_head_index].state = .{
                         .head = .{
@@ -168,6 +186,7 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
                     game.max_ticks_alive += 1;
                     game.cells = cells;
                     game.spawn_apple();
+                    return .eat;
                 },
             }
         }

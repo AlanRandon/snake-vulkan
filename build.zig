@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const minimp3 = b.dependency("minimp3", .{});
+
     const exe = b.addExecutable(.{
         .name = "vulkan-test",
         .root_source_file = b.path("src/main.zig"),
@@ -14,8 +16,9 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
     exe.linkSystemLibrary("ao");
-    exe.linkSystemLibrary("mpg123");
     exe.addCSourceFile(.{ .file = b.path("src/lib_wrapper.c") });
+
+    exe.root_module.addImport("minimp3", minimp3.module("minimp3"));
 
     {
         var assets = std.fs.openDirAbsolute(b.path("./assets").getPath(b), .{ .iterate = true }) catch unreachable;

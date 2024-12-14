@@ -95,7 +95,7 @@ pub fn Game(comptime rows: usize, comptime cols: usize) type {
         pub fn spawn_apple(game: *Self) void {
             // TODO: handle grid full
             while (true) {
-                const index = game.rng.intRangeAtMost(usize, 0, size);
+                const index = game.rng.intRangeLessThan(usize, 0, size);
                 const cell = &game.cells[index];
                 if (cell.state == .empty) {
                     cell.state = .apple;

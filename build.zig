@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
     exe.linkSystemLibrary("ao");
+    exe.linkSystemLibrary("soundio");
     exe.addCSourceFile(.{ .file = b.path("src/lib_wrapper.c") });
 
     exe.root_module.addImport("minimp3", minimp3.module("minimp3"));

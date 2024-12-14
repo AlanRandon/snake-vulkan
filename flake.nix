@@ -28,8 +28,8 @@
               shaderc
               stb
               glfw
-              libmpg123
               libao
+	      libsoundio
             ];
         };
       }

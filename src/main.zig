@@ -3,32 +3,113 @@ const vk = @import("./vulkan.zig");
 const Renderer = @import("./renderer.zig").Renderer(2);
 const Game = @import("./game.zig").Game;
 const Direction = @import("./game.zig").Direction;
-const GameRenderer = @import("./game/renderer.zig").GameRenderer;
+const GridRenderer = @import("./game/renderer.zig").GameRenderer;
+const ImageRenderer = @import("./game/menu_renderer.zig").ImageRenderer;
 const audio = @import("./audio.zig");
+const Allocator = std.mem.Allocator;
+
+const Event = union(enum) {
+    turn: Direction,
+    toggle_pause,
+    tick,
+};
+
+const State = struct {
+    direction: Direction = .east,
+    last_direction: Direction = .east,
+    state: enum {
+        paused,
+        no_game,
+        playing,
+    } = .no_game,
+    game: Game(10, 10) = undefined,
+    map: Map,
+    rng: std.Random,
+    assets: *const GameAssetBundle,
+    tick_ns: usize = 200_000_000,
+
+    pub fn handleEvent(state: *State, event: Event) !void {
+        switch (event) {
+            .turn => |direction| if (direction != state.last_direction.opposite()) {
+                state.direction = direction;
+            },
+            .tick => {
+                if (state.state != .playing) {
+                    return;
+                }
+
+                state.last_direction = state.direction;
+                switch (state.game.move(state.last_direction)) {
+                    .move => {},
+                    .game_over => {
+                        try state.assets.game_over_sound.start();
+                        state.tick_ns = @max(state.tick_ns - 10_000_000, 120_000_000);
+                        state.state = .no_game;
+                    },
+                    .eat => {
+                        try state.assets.eat_sounds[
+                            state.rng.weightedIndex(
+                                f32,
+                                state.assets.eat_sound_probabilities,
+                            )
+                        ].start();
+                    },
+                }
+            },
+            .toggle_pause => {
+                switch (state.state) {
+                    .paused => state.state = .playing,
+                    .playing => state.state = .paused,
+                    .no_game => {
+                        state.tick_ns = 200_000_000;
+
+                        const head = state.map.head;
+                        var game = Game(10, 10).init(head.initial_growth, state.rng);
+
+                        for (state.map.walls) |wall| {
+                            game.put_wall(wall.location[0], wall.location[1]);
+                        }
+
+                        game.put_head(head.location[0], head.location[1]);
+
+                        for (0..head.initial_growth) |_| {
+                            _ = game.move(head.direction);
+                        }
+
+                        game.spawn_apple();
+
+                        state.game = game;
+                        state.state = .playing;
+                        state.last_direction = head.direction;
+                        state.direction = head.direction;
+                    },
+                }
+            },
+        }
+    }
+};
 
 const Controls = struct {
-    const KeyState = enum { pressed, released };
-
     window: *const vk.GlfwWindow,
     states: [5]KeyState = [_]KeyState{.released} ** 5,
-    direction: Direction = .east,
-    inhibited_direction: Direction,
-    paused: bool = false,
 
-    fn read(controls: *Controls) void {
+    const KeyState = enum { pressed, released };
+
+    fn readEvents(controls: *Controls, events: []Event) []Event {
+        var result_len: usize = 0;
+
         inline for (.{
-            .{ .key = vk.c.GLFW_KEY_H, .direction = Direction.west },
-            .{ .key = vk.c.GLFW_KEY_J, .direction = Direction.south },
-            .{ .key = vk.c.GLFW_KEY_K, .direction = Direction.north },
-            .{ .key = vk.c.GLFW_KEY_L, .direction = Direction.east },
+            .{ .key = vk.c.GLFW_KEY_H, .event = Event{ .turn = Direction.west } },
+            .{ .key = vk.c.GLFW_KEY_J, .event = Event{ .turn = Direction.south } },
+            .{ .key = vk.c.GLFW_KEY_K, .event = Event{ .turn = Direction.north } },
+            .{ .key = vk.c.GLFW_KEY_L, .event = Event{ .turn = Direction.east } },
+            .{ .key = vk.c.GLFW_KEY_SPACE, .event = Event.toggle_pause },
         }, 0..) |key, i| {
             const state = &controls.states[i];
             switch (vk.c.glfwGetKey(controls.window.window, key.key)) {
                 vk.c.GLFW_PRESS => if (state.* == .released) {
-                    if (controls.inhibited_direction != key.direction) {
-                        controls.direction = key.direction;
-                    }
-
+                    events[result_len] = key.event;
+                    result_len += 1;
                     state.* = .pressed;
                 },
                 vk.c.GLFW_RELEASE => state.* = .released,
@@ -36,37 +117,56 @@ const Controls = struct {
             }
         }
 
-        switch (vk.c.glfwGetKey(controls.window.window, vk.c.GLFW_KEY_P)) {
-            vk.c.GLFW_PRESS => if (controls.states[4] == .released) {
-                controls.paused = !controls.paused;
-                controls.states[4] = .pressed;
-            },
-            vk.c.GLFW_RELEASE => controls.states[4] = .released,
-            else => std.debug.panic("invalid key state", .{}),
-        }
+        return events[0..result_len];
     }
 };
 
 const GameAssetBundle = struct {
     game_over_sound: audio.Sound,
-    eat_sound: audio.Sound,
+    music: audio.Sound,
+    eat_sounds: []audio.Sound,
+    eat_sound_probabilities: []const f32,
     tiles_texture: vk.texture.Texture,
+    play_texture: vk.texture.Texture,
+    allocator: Allocator,
+
+    const SoundOptionData = struct { data: []const u8, probability: f32 };
 
     pub fn init(
+        allocator: Allocator,
         sound: *audio.Audio,
         logical_device: *const vk.LogicalDevice,
         physical_device: *const vk.PhysicalDevice,
         command_pool: *const vk.CommandPool,
-        game_over_data: []const u8,
-        eat_data: []const u8,
-        tiles_data: []const u8,
+        data: struct {
+            game_over: []const u8,
+            eat: []const SoundOptionData,
+            tiles: []const u8,
+            play: []const u8,
+            music: []const u8,
+        },
     ) !GameAssetBundle {
-        var game_over_sound = try sound.sound(game_over_data);
+        var game_over_sound = try sound.sound(data.game_over);
         errdefer game_over_sound.deinit();
-        var eat_sound = try sound.sound(eat_data);
-        errdefer eat_sound.deinit();
+
+        var music = try sound.sound(data.music);
+        errdefer music.deinit();
+
+        var eat_sound_probabilities = std.ArrayList(f32).init(allocator);
+        errdefer eat_sound_probabilities.deinit();
+        var eat_sounds = std.ArrayList(audio.Sound).init(allocator);
+        errdefer eat_sounds.deinit();
+
+        for (data.eat) |s| {
+            var eat_sound = try sound.sound(s.data);
+            errdefer eat_sound.deinit();
+
+            try eat_sounds.append(eat_sound);
+            try eat_sound_probabilities.append(s.probability);
+        }
+
         var tiles = try vk.texture.Texture.init(
-            tiles_data,
+            data.tiles,
             logical_device,
             physical_device,
             command_pool,
@@ -74,17 +174,36 @@ const GameAssetBundle = struct {
         );
         errdefer tiles.deinit();
 
+        var play = try vk.texture.Texture.init(
+            data.play,
+            logical_device,
+            physical_device,
+            command_pool,
+            .{},
+        );
+        errdefer play.deinit();
+
         return .{
             .game_over_sound = game_over_sound,
-            .eat_sound = eat_sound,
+            .eat_sounds = try eat_sounds.toOwnedSlice(),
+            .eat_sound_probabilities = try eat_sound_probabilities.toOwnedSlice(),
             .tiles_texture = tiles,
+            .play_texture = play,
+            .music = music,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(assets: *GameAssetBundle) void {
+        assets.allocator.free(assets.eat_sound_probabilities);
+        for (assets.eat_sounds) |*s| {
+            s.deinit();
+        }
+        assets.allocator.free(assets.eat_sounds);
+        assets.music.deinit();
         assets.game_over_sound.deinit();
-        assets.eat_sound.deinit();
         assets.tiles_texture.deinit();
+        assets.play_texture.deinit();
     }
 };
 
@@ -100,35 +219,6 @@ pub fn main() !void {
 
     var sound = try audio.Audio.init(allocator);
     defer sound.deinit();
-
-    var thread_pool: std.Thread.Pool = undefined;
-    try thread_pool.init(.{ .allocator = allocator });
-    defer thread_pool.deinit();
-
-    var map = try std.json.parseFromSlice(
-        Map,
-        allocator,
-        @embedFile("asset:map.json"),
-        .{},
-    );
-    defer map.deinit();
-
-    var rng = std.Random.DefaultPrng.init(0);
-
-    const head = map.value.head;
-    var game = Game(10, 10).init(head.initial_growth, rng.random());
-
-    for (map.value.walls) |wall| {
-        game.put_wall(wall.location[0], wall.location[1]);
-    }
-
-    game.put_head(head.location[0], head.location[1]);
-
-    for (0..head.initial_growth) |_| {
-        _ = game.move(head.direction);
-    }
-
-    game.spawn_apple();
 
     var window = try vk.GlfwWindow.init(800, 600, "Vulkan");
     defer window.deinit();
@@ -163,65 +253,115 @@ pub fn main() !void {
     defer framebuffers.deinit();
 
     var assets = try GameAssetBundle.init(
+        allocator,
         &sound,
         &logical_device,
         &physical_device,
         &command_pool,
-        @embedFile("asset:game-over.mp3"),
-        @embedFile("asset:eat.mp3"),
-        @embedFile("asset:tiles.png"),
+        .{
+            .game_over = @embedFile("asset:game-over.mp3"),
+            .music = @embedFile("asset:music.mp3"),
+            .eat = &[_]GameAssetBundle.SoundOptionData{
+                .{ .data = @embedFile("asset:eat-1.mp3"), .probability = 0.75 },
+                .{ .data = @embedFile("asset:eat-2.mp3"), .probability = 0.25 },
+            },
+            .tiles = @embedFile("asset:tiles.png"),
+            .play = @embedFile("asset:play.png"),
+        },
     );
     defer assets.deinit();
 
-    var gr = try GameRenderer.init(
+    var map = try std.json.parseFromSlice(
+        Map,
+        allocator,
+        @embedFile("asset:map.json"),
+        .{},
+    );
+    defer map.deinit();
+
+    var rng = std.Random.DefaultPrng.init(0);
+    var state = State{
+        .map = map.value,
+        .rng = rng.random(),
+        .assets = &assets,
+    };
+
+    var grid_renderer = try GridRenderer.init(
         &logical_device,
         &physical_device,
         &command_pool,
         &window,
-        &surface,
         &swap_chain,
         &framebuffers,
         &render_pass,
-        &game,
+        &state.game,
         &assets.tiles_texture,
         allocator,
     );
-    defer gr.deinit();
+    defer grid_renderer.deinit();
+
+    var image_renderer = try ImageRenderer.init(
+        &logical_device,
+        &physical_device,
+        &command_pool,
+        &window,
+        &swap_chain,
+        &framebuffers,
+        &render_pass,
+        allocator,
+    );
+    defer image_renderer.deinit();
 
     var last_tick = try std.time.Instant.now();
+    var last_music_start = last_tick;
+    var controls = Controls{ .window = &window };
 
-    var controls = Controls{ .window = &window, .inhibited_direction = .west };
-
-    var tick_ns: usize = 200_000_000;
+    try assets.music.start();
 
     while (vk.c.glfwWindowShouldClose(window.window) == 0) {
         framebuffer_resized = false;
-
         vk.c.glfwPollEvents();
-        controls.read();
 
-        const now = try std.time.Instant.now();
-        if (now.since(last_tick) >= tick_ns and !controls.paused) {
-            last_tick = now;
-
-            controls.inhibited_direction = controls.direction.opposite();
-            switch (game.move(controls.direction)) {
-                .move => {},
-                .game_over => {
-                    try assets.game_over_sound.playInThreadPool(&thread_pool);
-                    controls.paused = true;
-                    tick_ns = @max(tick_ns - 10_000_000, 120_000_000);
-                },
-                .eat => {
-                    try assets.eat_sound.playInThreadPool(&thread_pool);
-                },
-            }
+        var event_buf: [10]Event = undefined;
+        for (controls.readEvents(&event_buf)) |event| {
+            try state.handleEvent(event);
         }
 
-        try gr.render(&game, .{ .framebuffer_resized = &framebuffer_resized });
+        const now = try std.time.Instant.now();
+        if (now.since(last_tick) >= state.tick_ns) {
+            last_tick = now;
+            try state.handleEvent(.tick);
+        }
+
+        if (now.since(last_music_start) >= state.assets.music.duration_ns()) {
+            last_music_start = now;
+            try assets.music.start();
+        }
+
+        switch (state.state) {
+            .no_game, .paused => try image_renderer.render(&assets.play_texture, .{ .framebuffer_resized = &framebuffer_resized }),
+            .playing => try grid_renderer.render(&state.game, .{ .framebuffer_resized = &framebuffer_resized }),
+        }
 
         if (framebuffer_resized) {
-            try gr.handleResize();
+            try grid_renderer.handleResize();
+            try image_renderer.handleResize();
+
+            _ = vk.c.vkDeviceWaitIdle(logical_device.device);
+            framebuffers.deinit();
+            swap_chain.deinit();
+            swap_chain = try vk.SwapChain.init(
+                &window,
+                &surface,
+                &physical_device,
+                &logical_device,
+                allocator,
+            );
+            framebuffers = try vk.Framebuffers.init(
+                &render_pass,
+                &swap_chain,
+                allocator,
+            );
         }
     }
 

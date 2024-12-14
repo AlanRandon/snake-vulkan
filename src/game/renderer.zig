@@ -30,7 +30,7 @@ const TileInstance = struct {
     const Buffer = vk.vertex.VertexBuffer(TileInstance);
 };
 
-const ShaderGlobals = struct {
+pub const ShaderGlobals = struct {
     window_size: vk.vertex.Vec2,
     cell_size: vk.vertex.Vec2,
 };
@@ -40,20 +40,19 @@ pub const GameRenderer = struct {
     logical_device: *const vk.LogicalDevice,
     physical_device: *const vk.PhysicalDevice,
     window: *const vk.GlfwWindow,
-    surface: *const vk.Surface,
     command_pool: *const vk.CommandPool,
-    swap_chain: *vk.SwapChain,
-    framebuffers: *vk.Framebuffers,
+    swap_chain: *const vk.SwapChain,
+    framebuffers: *const vk.Framebuffers,
     render_pass: *const vk.RenderPass,
     tiles: *const vk.texture.Texture,
     pipeline_layout: vk.PipelineLayout,
     descriptor_set_layout: vk.DescriptorSetLayout,
     pipeline: vk.Pipeline,
     renderer: Renderer,
+    shader_globals: ShaderGlobals,
     shader_modules: struct {
         vert: vk.ShaderModule,
         frag: vk.ShaderModule,
-        globals: ShaderGlobals,
     },
     buffers: struct {
         index: IndexBuffer,
@@ -65,7 +64,6 @@ pub const GameRenderer = struct {
         physical_device: *const vk.PhysicalDevice,
         command_pool: *const vk.CommandPool,
         window: *const vk.GlfwWindow,
-        surface: *const vk.Surface,
         swap_chain: *vk.SwapChain,
         framebuffers: *vk.Framebuffers,
         render_pass: *const vk.RenderPass,
@@ -73,10 +71,10 @@ pub const GameRenderer = struct {
         tile_texture: *const vk.texture.Texture,
         allocator: Allocator,
     ) !GameRenderer {
-        var vert_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:shader.vert");
+        var vert_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:grid.vert");
         errdefer vert_shader.deinit();
 
-        var frag_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:shader.frag");
+        var frag_shader = try vk.ShaderModule.initFromEmbed(logical_device, "spv:grid.frag");
         errdefer frag_shader.deinit();
 
         var descriptor_set_layout = try vk.DescriptorSetLayout.init(
@@ -159,7 +157,6 @@ pub const GameRenderer = struct {
             .logical_device = logical_device,
             .physical_device = physical_device,
             .window = window,
-            .surface = surface,
             .swap_chain = swap_chain,
             .render_pass = render_pass,
             .pipeline_layout = pipeline_layout,
@@ -173,16 +170,16 @@ pub const GameRenderer = struct {
                 .index = index_buffer,
                 .instance = instance_buffer,
             },
+            .shader_globals = ShaderGlobals{
+                .window_size = [_]f32{
+                    @floatFromInt(window.dimensions().width),
+                    @floatFromInt(window.dimensions().height),
+                },
+                .cell_size = [_]f32{ 1.0 / @as(f32, @floatFromInt(rows)), 1.0 / @as(f32, @floatFromInt(cols)) },
+            },
             .shader_modules = .{
                 .vert = vert_shader,
                 .frag = frag_shader,
-                .globals = ShaderGlobals{
-                    .window_size = [_]f32{
-                        @floatFromInt(window.dimensions().width),
-                        @floatFromInt(window.dimensions().height),
-                    },
-                    .cell_size = [_]f32{ 1.0 / @as(f32, @floatFromInt(rows)), 1.0 / @as(f32, @floatFromInt(cols)) },
-                },
             },
         };
     }
@@ -199,26 +196,10 @@ pub const GameRenderer = struct {
     }
 
     pub fn handleResize(renderer: *GameRenderer) !void {
-        renderer.shader_modules.globals.window_size = [_]f32{
+        renderer.shader_globals.window_size = [_]f32{
             @floatFromInt(renderer.window.dimensions().width),
             @floatFromInt(renderer.window.dimensions().height),
         };
-
-        _ = vk.c.vkDeviceWaitIdle(renderer.swap_chain.logical_device.device);
-        renderer.framebuffers.deinit();
-        renderer.swap_chain.deinit();
-        renderer.swap_chain.* = try vk.SwapChain.init(
-            renderer.window,
-            renderer.surface,
-            renderer.physical_device,
-            renderer.logical_device,
-            renderer.allocator,
-        );
-        renderer.framebuffers.* = try vk.Framebuffers.init(
-            renderer.render_pass,
-            renderer.swap_chain,
-            renderer.allocator,
-        );
     }
 
     pub fn render(renderer: *GameRenderer, game: anytype, opts: struct { framebuffer_resized: *bool }) !void {
@@ -250,12 +231,12 @@ pub const GameRenderer = struct {
                         translate: [2]f32,
                     } = switch (head.facing) {
                         .east => .{
-                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                            .translate = [_]f32{ 1.0, 0.0 },
-                        },
-                        .west => .{
                             .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
                             .translate = [_]f32{ 0.0, 0.0 },
+                        },
+                        .west => .{
+                            .transform = [_]f32{ -1.0, 0.0, 0.0, -1.0 },
+                            .translate = [_]f32{ 1.0, 1.0 },
                         },
                         .north => .{
                             .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
@@ -282,13 +263,13 @@ pub const GameRenderer = struct {
                         tile_number: CellTextureOffset,
                     } = if (tail.ticks_alive >= game.tail_length) switch (tail.to) {
                         .east => .{
-                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                            .translate = [_]f32{ 1.0, 0.0 },
+                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 0.0, 0.0 },
                             .tile_number = .tail_end,
                         },
                         .west => .{
-                            .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
-                            .translate = [_]f32{ 0.0, 0.0 },
+                            .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                            .translate = [_]f32{ 1.0, 0.0 },
                             .tile_number = .tail_end,
                         },
                         .north => .{
@@ -304,24 +285,6 @@ pub const GameRenderer = struct {
                     } else switch (tail.from) {
                         .west => switch (tail.to) {
                             .east => .{
-                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                                .translate = [_]f32{ 1.0, 0.0 },
-                                .tile_number = .tail,
-                            },
-                            .north => .{
-                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
-                                .translate = [_]f32{ 1.0, 0.0 },
-                                .tile_number = .tail_corner,
-                            },
-                            .south => .{
-                                .transform = [_]f32{ -1.0, 0.0, 0.0, -1.0 },
-                                .translate = [_]f32{ 1.0, 1.0 },
-                                .tile_number = .tail_corner,
-                            },
-                            else => std.debug.panic("cannot render malformed tail", .{}),
-                        },
-                        .east => switch (tail.to) {
-                            .west => .{
                                 .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
                                 .translate = [_]f32{ 0.0, 0.0 },
                                 .tile_number = .tail,
@@ -338,6 +301,24 @@ pub const GameRenderer = struct {
                             },
                             else => std.debug.panic("cannot render malformed tail", .{}),
                         },
+                        .east => switch (tail.to) {
+                            .west => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail,
+                            },
+                            .north => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, 1.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            .south => .{
+                                .transform = [_]f32{ -1.0, 0.0, 0.0, -1.0 },
+                                .translate = [_]f32{ 1.0, 1.0 },
+                                .tile_number = .tail_corner,
+                            },
+                            else => std.debug.panic("cannot render malformed tail", .{}),
+                        },
                         .south => switch (tail.to) {
                             .north => .{
                                 .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
@@ -345,13 +326,13 @@ pub const GameRenderer = struct {
                                 .tile_number = .tail,
                             },
                             .east => .{
-                                .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
-                                .translate = [_]f32{ 1.0, 0.0 },
+                                .transform = [_]f32{ 0.0, -1.0, -1.0, 0.0 },
+                                .translate = [_]f32{ 1.0, 1.0 },
                                 .tile_number = .tail_corner,
                             },
                             .west => .{
-                                .transform = [_]f32{ 0.0, -1.0, -1.0, 0.0 },
-                                .translate = [_]f32{ 1.0, 1.0 },
+                                .transform = [_]f32{ 0.0, 1.0, -1.0, 0.0 },
+                                .translate = [_]f32{ 1.0, 0.0 },
                                 .tile_number = .tail_corner,
                             },
                             else => std.debug.panic("cannot render malformed tail", .{}),
@@ -363,23 +344,17 @@ pub const GameRenderer = struct {
                                 .tile_number = .tail,
                             },
                             .east => .{
-                                .transform = [_]f32{ 0.0, 1.0, 1.0, 0.0 },
-                                .translate = [_]f32{ 0.0, 0.0 },
-                                .tile_number = .tail_corner,
-                            },
-                            .west => .{
                                 .transform = [_]f32{ 0.0, -1.0, 1.0, 0.0 },
                                 .translate = [_]f32{ 0.0, 1.0 },
                                 .tile_number = .tail_corner,
                             },
+                            .west => .{
+                                .transform = [_]f32{ 0.0, 1.0, 1.0, 0.0 },
+                                .translate = [_]f32{ 0.0, 0.0 },
+                                .tile_number = .tail_corner,
+                            },
                             else => std.debug.panic("cannot render malformed tail", .{}),
                         },
-                    };
-
-                    _ = .{
-                        .transform = [_]f32{ 1.0, 0.0, 0.0, 1.0 },
-                        .translate = [_]f32{ 0.0, 0.0 },
-                        .tile_number = .tail_corner,
                     };
 
                     rendered_cells[rendered_cell_count] = .{
@@ -441,7 +416,7 @@ pub const GameRenderer = struct {
         frame.bindDescriptorSets(&renderer.pipeline_layout);
         frame.commandBuffer().bindIndexBuffer(&renderer.buffers.index);
         frame.commandBuffer().bindVertexBuffers(.{&renderer.buffers.instance});
-        frame.commandBuffer().pushConstants(&renderer.pipeline_layout, &renderer.shader_modules.globals, .{ .index = 0 });
+        frame.commandBuffer().pushConstants(&renderer.pipeline_layout, &renderer.shader_globals, .{ .index = 0 });
         vk.c.vkCmdDrawIndexed(frame.commandBuffer().buffer, renderer.buffers.index.len, renderer.buffers.instance.len, 0, 0, 0);
 
         frame.draw(.{ .error_payload = &result }) catch |err| switch (err) {

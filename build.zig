@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const minimp3 = b.dependency("minimp3", .{});
 
     const exe = b.addExecutable(.{
-        .name = "vulkan-test",
+        .name = "snake",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkSystemLibrary("glfw");
     exe.linkSystemLibrary("vulkan");
-    exe.linkSystemLibrary("ao");
     exe.linkSystemLibrary("soundio");
     exe.addCSourceFile(.{ .file = b.path("src/lib_wrapper.c") });
 

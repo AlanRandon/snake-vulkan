@@ -43,10 +43,10 @@ const State = struct {
                     .move => {},
                     .game_over => {
                         try state.assets.game_over_sound.start();
-                        state.tick_ns = @max(state.tick_ns - 10_000_000, 120_000_000);
                         state.state = .no_game;
                     },
                     .eat => {
+                        state.tick_ns = @max(state.tick_ns - 10_000_000, 150_000_000);
                         try state.assets.eat_sounds[
                             state.rng.weightedIndex(
                                 f32,
@@ -131,6 +131,53 @@ const GameAssetBundle = struct {
     allocator: Allocator,
 
     const SoundOptionData = struct { data: []const u8, probability: f32 };
+
+    pub fn initFromDir(
+        allocator: Allocator,
+        sound: *audio.Audio,
+        logical_device: *const vk.LogicalDevice,
+        physical_device: *const vk.PhysicalDevice,
+        command_pool: *const vk.CommandPool,
+        dir: *const std.fs.Dir,
+    ) !GameAssetBundle {
+        const max_file_size = std.math.maxInt(u32);
+
+        const game_over = try dir.readFileAlloc(allocator, "game-over.mp3", max_file_size);
+        defer allocator.free(game_over);
+
+        const eat_1 = try dir.readFileAlloc(allocator, "eat-1.mp3", max_file_size);
+        defer allocator.free(eat_1);
+
+        const eat_2 = try dir.readFileAlloc(allocator, "eat-2.mp3", max_file_size);
+        defer allocator.free(eat_2);
+
+        const music = try dir.readFileAlloc(allocator, "music.mp3", max_file_size);
+        defer allocator.free(music);
+
+        const tiles = try dir.readFileAlloc(allocator, "tiles.png", max_file_size);
+        defer allocator.free(tiles);
+
+        const play = try dir.readFileAlloc(allocator, "play.png", max_file_size);
+        defer allocator.free(play);
+
+        return init(
+            allocator,
+            sound,
+            logical_device,
+            physical_device,
+            command_pool,
+            .{
+                .game_over = game_over,
+                .eat = &[_]GameAssetBundle.SoundOptionData{
+                    .{ .data = eat_1, .probability = 0.75 },
+                    .{ .data = eat_2, .probability = 0.25 },
+                },
+                .tiles = tiles,
+                .play = play,
+                .music = music,
+            },
+        );
+    }
 
     pub fn init(
         allocator: Allocator,
@@ -252,7 +299,22 @@ pub fn main() !void {
     var framebuffers = try vk.Framebuffers.init(&render_pass, &swap_chain, allocator);
     defer framebuffers.deinit();
 
-    var assets = try GameAssetBundle.init(
+    var args = std.process.args();
+    _ = args.skip();
+
+    var assets = if (args.next()) |assets_path| blk: {
+        var assets_dir = try std.fs.cwd().openDir(assets_path, .{});
+        defer assets_dir.close();
+
+        break :blk try GameAssetBundle.initFromDir(
+            allocator,
+            &sound,
+            &logical_device,
+            &physical_device,
+            &command_pool,
+            &assets_dir,
+        );
+    } else try GameAssetBundle.init(
         allocator,
         &sound,
         &logical_device,
@@ -344,8 +406,8 @@ pub fn main() !void {
         }
 
         if (framebuffer_resized) {
-            try grid_renderer.handleResize();
-            try image_renderer.handleResize();
+            grid_renderer.handleResize();
+            image_renderer.handleResize();
 
             _ = vk.c.vkDeviceWaitIdle(logical_device.device);
             framebuffers.deinit();

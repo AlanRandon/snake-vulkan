@@ -129,7 +129,7 @@ pub const ImageRenderer = struct {
         renderer.shader_modules.frag.deinit();
     }
 
-    pub fn handleResize(renderer: *ImageRenderer) !void {
+    pub fn handleResize(renderer: *ImageRenderer) void {
         renderer.shader_globals.window_size = [_]f32{
             @floatFromInt(renderer.window.dimensions().width),
             @floatFromInt(renderer.window.dimensions().height),

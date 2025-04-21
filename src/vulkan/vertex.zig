@@ -164,7 +164,7 @@ pub fn createStagedBuffer(
 
     var gpu_data: ?*align(@alignOf(T)) anyopaque = undefined;
     gpu_data = undefined;
-    _ = c.vkMapMemory(logical_device.device, staging_buffer.memory, 0, size, 0, &gpu_data);
+    _ = c.vkMapMemory(logical_device.device, staging_buffer.memory, 0, size, 0, @ptrCast(&gpu_data));
     @memcpy(@as([*]T, @ptrCast(gpu_data)), data);
     c.vkUnmapMemory(logical_device.device, staging_buffer.memory);
 

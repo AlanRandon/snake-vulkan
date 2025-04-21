@@ -1,36 +1,56 @@
 {
-  description = "A flake for vulkan";
-
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "flake-utils";
+      };
+    };
+    zls-overlay = {
+      url = "github:zigtools/zls";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        zig-overlay.follows = "zig-overlay";
+        flake-utils.follows = "flake-utils";
+      };
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, zls-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        zig = zig-overlay.packages.${system}.master;
+        overlays = [
+          (final: prev: {
+            inherit zig;
+          })
+        ];
+        pkgs = import nixpkgs { inherit system overlays; };
+        zls = zls-overlay.packages.${system}.zls.overrideAttrs (old: {
+          nativeBuildInputs = [ zig ];
+        });
+        nativeBuildInputs = with pkgs; [ shaderc zig ];
+        buildInputs =
+          with pkgs; [
+            vulkan-tools
+            vulkan-headers
+            vulkan-loader
+            vulkan-validation-layers
+            spirv-tools
+            stb
+            glfw
+            libsoundio
+          ];
       in
       {
         devShell = pkgs.mkShell {
-          shellHook = "exec zsh";
-
           VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
           VULKAN_SDK = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-
-          buildInputs =
-            with pkgs; [
-              vulkan-tools
-              vulkan-headers
-              vulkan-loader
-              vulkan-validation-layers
-              spirv-tools
-              shaderc
-              stb
-              glfw
-              libao
-	      libsoundio
-            ];
+          packages = [ zls ];
+          inherit buildInputs nativeBuildInputs;
         };
       }
     );
